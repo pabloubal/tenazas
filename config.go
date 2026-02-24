@@ -10,19 +10,18 @@ import (
 )
 
 const (
-	DefaultPort        = 18789
-	DefaultTgInterval  = 500 // ms
-	DefaultPageSize    = 5
-	DefaultStorageDir  = ".tenazas"
-	ConfigFileName     = "config.json"
+	DefaultTgInterval = 500 // ms
+	DefaultPageSize   = 5
+	DefaultStorageDir = ".tenazas"
+	ConfigFileName    = "config.json"
 )
 
 type Config struct {
-	StorageDir      string   `json:"storage_dir"`
-	TelegramToken   string   `json:"telegram_token"`
-	AllowedUserIDs  []int64  `json:"allowed_user_ids"`
-	UpdateInterval  int      `json:"update_interval"` // ms
-	GeminiBinPath   string   `json:"gemini_bin_path"`
+	StorageDir     string  `json:"storage_dir"`
+	TelegramToken  string  `json:"telegram_token"`
+	AllowedUserIDs []int64 `json:"allowed_user_ids"`
+	UpdateInterval int     `json:"update_interval"`
+	GeminiBinPath  string  `json:"gemini_bin_path"`
 }
 
 func getDefaultStoragePath() string {
@@ -37,15 +36,11 @@ func loadConfig() (*Config, error) {
 		GeminiBinPath:  "gemini",
 	}
 
-	// 1. Try file
 	cfgPath := filepath.Join(cfg.StorageDir, ConfigFileName)
 	if data, err := os.ReadFile(cfgPath); err == nil {
-		if err := json.Unmarshal(data, cfg); err != nil {
-			return nil, err
-		}
+		json.Unmarshal(data, cfg)
 	}
 
-	// 2. Env Overrides
 	if envToken := os.Getenv("TENAZAS_TG_TOKEN"); envToken != "" {
 		cfg.TelegramToken = envToken
 	}
@@ -61,13 +56,10 @@ func loadConfig() (*Config, error) {
 		cfg.StorageDir = envDir
 	}
 
-	// Ensure storage directory exists
-	if err := os.MkdirAll(cfg.StorageDir, 0755); err != nil {
-		return nil, err
-	}
-	if err := os.MkdirAll(filepath.Join(cfg.StorageDir, "sessions"), 0755); err != nil {
-		return nil, err
-	}
+	os.MkdirAll(cfg.StorageDir, 0755)
+	os.MkdirAll(filepath.Join(cfg.StorageDir, "sessions"), 0755)
+	os.MkdirAll(filepath.Join(cfg.StorageDir, "skills"), 0755)
+	os.MkdirAll(filepath.Join(cfg.StorageDir, "heartbeats"), 0755)
 
 	return cfg, nil
 }

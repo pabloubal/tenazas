@@ -8,20 +8,24 @@ import (
 	"syscall"
 )
 
+type InstanceState struct {
+	SessionID string `json:"session_id"`
+	Verbosity string `json:"verbosity"` // "LOW", "MEDIUM", "HIGH"
+}
+
 type Registry struct {
-	Instances map[string]string `json:"instances"` // "cli-PID" or "tg-ChatID" -> SessionID
+	Instances map[string]InstanceState `json:"instances"`
 	lockPath  string
 	regPath   string
 }
 
 func NewRegistry(storageDir string) (*Registry, error) {
 	r := &Registry{
-		Instances: make(map[string]string),
+		Instances: make(map[string]InstanceState),
 		lockPath:  filepath.Join(storageDir, ".registry.lock"),
 		regPath:   filepath.Join(storageDir, "registry.json"),
 	}
 
-	// Create lock file if not exists
 	f, err := os.OpenFile(r.lockPath, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		return nil, err
@@ -38,18 +42,15 @@ func (r *Registry) withLock(fn func() error) error {
 	}
 	defer f.Close()
 
-	// Exclusive flock
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
 		return err
 	}
 	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 
-	// Load
 	data, err := os.ReadFile(r.regPath)
 	if err == nil {
 		if err := json.Unmarshal(data, &r.Instances); err != nil {
-			// fallback if file is empty or corrupted
-			r.Instances = make(map[string]string)
+			r.Instances = make(map[string]InstanceState)
 		}
 	}
 
@@ -57,7 +58,6 @@ func (r *Registry) withLock(fn func() error) error {
 		return err
 	}
 
-	// Save
 	data, err = json.MarshalIndent(r.Instances, "", "  ")
 	if err != nil {
 		return err
@@ -67,20 +67,34 @@ func (r *Registry) withLock(fn func() error) error {
 
 func (r *Registry) Set(instanceID, sessionID string) error {
 	return r.withLock(func() error {
-		r.Instances[instanceID] = sessionID
+		state := r.Instances[instanceID]
+		state.SessionID = sessionID
+		if state.Verbosity == "" {
+			state.Verbosity = "MEDIUM" // Default
+		}
+		r.Instances[instanceID] = state
 		return nil
 	})
 }
 
-func (r *Registry) Get(instanceID string) (string, error) {
-	var sessionID string
+func (r *Registry) SetVerbosity(instanceID, verbosity string) error {
+	return r.withLock(func() error {
+		state := r.Instances[instanceID]
+		state.Verbosity = verbosity
+		r.Instances[instanceID] = state
+		return nil
+	})
+}
+
+func (r *Registry) Get(instanceID string) (InstanceState, error) {
+	var state InstanceState
 	err := r.withLock(func() error {
 		var ok bool
-		sessionID, ok = r.Instances[instanceID]
+		state, ok = r.Instances[instanceID]
 		if !ok {
 			return fmt.Errorf("instance not found")
 		}
 		return nil
 	})
-	return sessionID, err
+	return state, err
 }

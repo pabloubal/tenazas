@@ -4,89 +4,84 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 )
 
 type CLI struct {
-	Sm   *SessionManager
-	Exec *Executor
-	Reg  *Registry
-}
-
-func (c *CLI) ListAndResume() (*Session, error) {
-	page := 0
-	pageSize := DefaultPageSize
-
-	for {
-		sessions, total, err := c.Sm.List(page, pageSize)
-		if err != nil {
-			return nil, err
-		}
-
-		fmt.Printf("\x0a--- Sessions (Page %d, Total %d) ---\x0a", page+1, total)
-		for i, s := range sessions {
-			title := s.Title
-			if title == "" {
-				title = s.ID
-			}
-			fmt.Printf("[%d] %s (%s)\x0a", i+1, title, s.LastUpdated.Format("2006-01-02 15:04"))
-		}
-
-		fmt.Print("\x0aEnter number to resume, 'n' for next, 'p' for prev, or 'q' to quit: ")
-		var input string
-		fmt.Scanln(&input)
-
-		if input == "q" {
-			return nil, nil
-		}
-		if input == "n" && (page+1)*pageSize < total {
-			page++
-			continue
-		}
-		if input == "p" && page > 0 {
-			page--
-			continue
-		}
-
-		idx, err := strconv.Atoi(input)
-		if err == nil && idx > 0 && idx <= len(sessions) {
-			return &sessions[idx-1], nil
-		}
-
-		fmt.Println("Invalid input.")
-	}
+	Sm     *SessionManager
+	Exec   *Executor
+	Reg    *Registry
+	Engine *Engine
 }
 
 func (c *CLI) Run(resume bool) error {
 	var sess *Session
-	var err error
 
 	if resume {
-		sess, err = c.ListAndResume()
-		if err != nil || sess == nil {
-			return err
-		}
+		// Simplified resume for CLI, mostly rely on Telegram for rich UX
+		sess, _ = c.Sm.GetLatest()
 	} else {
 		cwd, _ := os.Getwd()
 		sess = &Session{
 			ID:          uuid.New().String(),
 			CWD:         cwd,
 			LastUpdated: time.Now(),
+			RoleCache:   make(map[string]string),
 		}
-		sess.EnsureLocalDir()
 		c.Sm.Save(sess)
+	}
+
+	if sess == nil {
+		fmt.Println("No sessions available.")
+		return nil
 	}
 
 	instanceID := fmt.Sprintf("cli-%d", os.Getpid())
 	c.Reg.Set(instanceID, sess.ID)
-
-	sess.EnsureLocalDir() // Ensure it exists if resumed as well
+	c.Reg.SetVerbosity(instanceID, "HIGH")
 
 	fmt.Printf("Connected to session %s (Path: %s)\x0a", sess.ID, sess.CWD)
-	fmt.Println("Type your prompt and press Enter. Ctrl+C to quit.")
+	fmt.Println("Commands: /run <skill>, /last <N>, /intervene <action>")
+
+	// Subscribe to events
+	eventCh := GlobalBus.Subscribe()
+	go func() {
+		for e := range eventCh {
+			if e.SessionID == sess.ID && e.Type == EventAudit {
+				audit := e.Payload.(AuditEntry)
+				if audit.Type == "llm_response_chunk" {
+					fmt.Print(audit.Content)
+					continue
+				}
+
+				// High-visibility markers
+				switch audit.Type {
+				case "info":
+					fmt.Printf("\x0a\x1b[34;1m🟦 %s\x1b[0m\x0a", audit.Content) // Bold Blue
+				case "llm_prompt":
+					fmt.Printf("\x0a\x1b[33m🟡 PROMPT (%s):\x1b[0m\x0a\x1b[90m%s\x1b[0m\x0a", audit.Source, audit.Content) // Yellow header, gray prompt
+				case "llm_response":
+					fmt.Printf("\x0a\x1b[32;1m🟢 RESPONSE:\x1b[0m\x0a%s\x0a", audit.Content) // Bold Green
+				case "cmd_result":
+					color := "32" // Green
+					icon := "✅"
+					if !strings.Contains(audit.Content, "Exit Code: 0") {
+						color = "31" // Red
+						icon = "❌"
+					}
+					fmt.Printf("\x0a\x1b[%s;1m%s COMMAND RESULT:\x1b[0m\x0a\x1b[90m%s\x1b[0m\x0a", color, icon, audit.Content)
+				case "intervention":
+					fmt.Printf("\x0a\x1b[31;1m⚠️ INTERVENTION REQUIRED:\x1b[0m\x0a%s\x0a", audit.Content)
+					fmt.Print("\x0aType `/intervene <retry|fail_route|abort>`\x0a> ")
+				default:
+					fmt.Printf("\x0a[%s] %s\x0a", audit.Type, audit.Content)
+				}
+			}
+		}
+	}()
 
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
@@ -99,28 +94,41 @@ func (c *CLI) Run(resume bool) error {
 			continue
 		}
 
-		if sess.Title == "" {
-			title := text
-			if len(title) > 30 {
-				title = title[:30] + "..."
+		if strings.HasPrefix(text, "/run ") {
+			skillName := strings.TrimPrefix(text, "/run ")
+			skill, err := LoadSkill(c.Sm.StoragePath, skillName)
+			if err != nil {
+				fmt.Println("Skill error:", err)
+				continue
 			}
-			sess.Title = title
+			sess.SkillName = skillName
 			c.Sm.Save(sess)
+			go c.Engine.Run(skill, sess)
+			continue
 		}
 
-		fmt.Print("\x0aThinking...")
-		err := c.Exec.Run(sess, text, func(chunk string) {
-			fmt.Print(chunk)
-		}, func(sid string) {
-			sess.GeminiSID = sid
-			c.Sm.Save(sess)
+		if strings.HasPrefix(text, "/last ") {
+			n := 5
+			fmt.Sscanf(strings.TrimPrefix(text, "/last "), "%d", &n)
+			logs, _ := c.Sm.GetLastAudit(sess, n)
+			for _, l := range logs {
+				fmt.Printf("[%s] %s: %s\x0a", l.Timestamp.Format("15:04"), l.Type, l.Content)
+			}
+			continue
+		}
+
+		if strings.HasPrefix(text, "/intervene ") {
+			action := strings.TrimPrefix(text, "/intervene ")
+			c.Engine.ResolveIntervention(sess.ID, action)
+			continue
+		}
+
+		// Default: log user input
+		c.Sm.AppendAudit(sess, AuditEntry{
+			Type:    "user_input",
+			Source:  "cli",
+			Content: text,
 		})
-
-		if err != nil {
-			fmt.Printf("\x0aError: %v\x0a", err)
-		}
-		fmt.Println()
-		c.Sm.Save(sess)
 	}
 
 	return nil

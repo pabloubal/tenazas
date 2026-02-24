@@ -1,6 +1,3 @@
-// Package main implements Tenazas, a high-performance, zero-dependency gateway
-// for the gemini CLI. It bridges terminal and Telegram interfaces with
-// stateful session handoff and directory-aware reasoning.
 package main
 
 import (
@@ -13,7 +10,7 @@ import (
 )
 
 func main() {
-	resume := flag.Bool("resume", false, "Resume a previous session (CLI only)")
+	resume := flag.Bool("resume", false, "Resume a previous session")
 	flag.Parse()
 
 	cfg, err := loadConfig()
@@ -28,11 +25,53 @@ func main() {
 	}
 
 	exec := NewExecutor(cfg.GeminiBinPath, cfg.StorageDir)
+	engine := NewEngine(sm, exec)
 
-	command := "cli"
-	if len(flag.Args()) > 0 {
-		command = flag.Arg(0)
+	// Start Telegram
+	var tg *Telegram
+	if cfg.TelegramToken != "" {
+		tg = &Telegram{
+			Token:          cfg.TelegramToken,
+			AllowedIDs:     cfg.AllowedUserIDs,
+			UpdateInterval: cfg.UpdateInterval,
+			Sm:             sm,
+			Exec:           exec,
+			Reg:            reg,
+			Engine:         engine,
+		}
+		go tg.Poll()
+		fmt.Println("Telegram bot started.")
+	} else {
+		fmt.Println("Telegram token missing, running in CLI-only mode.")
 	}
+
+	// Start Heartbeat Runner
+	hb := NewHeartbeatRunner(cfg.StorageDir, sm, engine, tg)
+	go hb.CheckAndRun() // In prod, this would run on a ticker/cron.
+
+	// Resume any sessions marked as "running" or "intervention_required"
+	go func() {
+		page := 0
+		for {
+			sessions, total, err := sm.List(page, 50)
+			if err != nil || len(sessions) == 0 {
+				break
+			}
+			for _, s := range sessions {
+				if (s.Status == "running" || s.Status == "intervention_required") && s.SkillName != "" {
+					skill, err := LoadSkill(cfg.StorageDir, s.SkillName)
+					if err == nil {
+						fmt.Printf("Resuming task: %s (Skill: %s)\x0a", s.ID, s.SkillName)
+						go engine.Run(skill, &s)
+					}
+				}
+			}
+			if (page+1)*50 >= total {
+				break
+			}
+			page++
+		}
+	}()
 
 	// Handle signals for cleanup
 	sigChan := make(chan os.Signal, 1)
@@ -43,34 +82,15 @@ func main() {
 		os.Exit(0)
 	}()
 
-	switch command {
-	case "server":
-		if cfg.TelegramToken == "" {
-			log.Fatal("Telegram token missing in config")
-		}
-		tg := &Telegram{
-			Token:          cfg.TelegramToken,
-			AllowedIDs:     cfg.AllowedUserIDs,
-			UpdateInterval: cfg.UpdateInterval,
-			Sm:             sm,
-			Exec:           exec,
-			Reg:            reg,
-		}
-		fmt.Println("Starting Telegram server...")
-		tg.Poll() // Poll is a blocking loop
+	// Start CLI
+	cli := &CLI{
+		Sm:     sm,
+		Exec:   exec,
+		Reg:    reg,
+		Engine: engine,
+	}
 
-	case "cli":
-		cli := &CLI{
-			Sm:   sm,
-			Exec: exec,
-			Reg:  reg,
-		}
-		if err := cli.Run(*resume); err != nil {
-			fmt.Printf("CLI Error: %v\x0a", err)
-		}
-
-	default:
-		fmt.Printf("Unknown command: %s\x0aUsage: tenazas [cli|server]\x0a", command)
-		os.Exit(1)
+	if err := cli.Run(*resume); err != nil {
+		fmt.Printf("CLI Error: %v\x0a", err)
 	}
 }
