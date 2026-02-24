@@ -46,6 +46,17 @@ func (c *CLI) Run(resume bool) error {
 	fmt.Printf("Connected to session %s (Path: %s)\x0a", sess.ID, sess.CWD)
 	fmt.Println("Commands: /run <skill>, /last <N>, /intervene <action>")
 
+	// If session has a skill but is stopped, auto-resume it
+	if sess.SkillName != "" && (sess.Status == "failed" || sess.Status == "idle") {
+		skill, err := LoadSkill(c.Sm.StoragePath, sess.SkillName)
+		if err == nil {
+			fmt.Printf("Auto-resuming skill: %s\x0a", sess.SkillName)
+			sess.Status = "running"
+			c.Sm.Save(sess)
+			go c.Engine.Run(skill, sess)
+		}
+	}
+
 	// Subscribe to events
 	eventCh := GlobalBus.Subscribe()
 	go func() {
