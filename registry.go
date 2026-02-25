@@ -1,10 +1,10 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 )
 
@@ -14,25 +14,35 @@ type InstanceState struct {
 }
 
 type Registry struct {
-	Instances map[string]InstanceState `json:"instances"`
+	instances map[string]InstanceState
+	storage   *Storage
 	lockPath  string
-	regPath   string
+	mu        sync.RWMutex
 }
 
 func NewRegistry(storageDir string) (*Registry, error) {
 	r := &Registry{
-		Instances: make(map[string]InstanceState),
+		instances: make(map[string]InstanceState),
+		storage:   NewStorage(storageDir),
 		lockPath:  filepath.Join(storageDir, ".registry.lock"),
-		regPath:   filepath.Join(storageDir, "registry.json"),
 	}
 
+	// Ensure lock file exists
 	f, err := os.OpenFile(r.lockPath, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		return nil, err
 	}
 	f.Close()
 
+	r.Sync()
 	return r, nil
+}
+
+// Sync force-reloads the registry from disk
+func (r *Registry) Sync() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.storage.ReadJSON("registry.json", &r.instances)
 }
 
 func (r *Registry) withLock(fn func() error) error {
@@ -47,54 +57,57 @@ func (r *Registry) withLock(fn func() error) error {
 	}
 	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 
-	data, err := os.ReadFile(r.regPath)
-	if err == nil {
-		if err := json.Unmarshal(data, &r.Instances); err != nil {
-			r.Instances = make(map[string]InstanceState)
-		}
-	}
-
-	if err := fn(); err != nil {
-		return err
-	}
-
-	data, err = json.MarshalIndent(r.Instances, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(r.regPath, data, 0644)
+	// Sync from disk before modification
+	r.storage.ReadJSON("registry.json", &r.instances)
+	return fn()
 }
 
 func (r *Registry) Set(instanceID, sessionID string) error {
 	return r.withLock(func() error {
-		state := r.Instances[instanceID]
+		state := r.instances[instanceID]
+		if state.SessionID == sessionID {
+			return nil // No change
+		}
 		state.SessionID = sessionID
 		if state.Verbosity == "" {
-			state.Verbosity = "MEDIUM" // Default
+			state.Verbosity = "MEDIUM"
 		}
-		r.Instances[instanceID] = state
-		return nil
+		r.instances[instanceID] = state
+		return r.storage.WriteJSON("registry.json", r.instances)
 	})
 }
 
 func (r *Registry) SetVerbosity(instanceID, verbosity string) error {
 	return r.withLock(func() error {
-		state := r.Instances[instanceID]
+		state := r.instances[instanceID]
+		if state.Verbosity == verbosity {
+			return nil
+		}
 		state.Verbosity = verbosity
-		r.Instances[instanceID] = state
-		return nil
+		r.instances[instanceID] = state
+		return r.storage.WriteJSON("registry.json", r.instances)
 	})
 }
 
 func (r *Registry) Get(instanceID string) (InstanceState, error) {
-	var state InstanceState
-	err := r.withLock(func() error {
-		var ok bool
-		state, ok = r.Instances[instanceID]
-		if !ok {
-			return fmt.Errorf("instance not found")
-		}
-		return nil
-	})
-	return state, err
+	// Optimistic memory read
+	r.mu.RLock()
+	state, ok := r.instances[instanceID]
+	r.mu.RUnlock()
+
+	if ok {
+		return state, nil
+	}
+
+	// Fallback to sync and retry
+	if err := r.Sync(); err != nil {
+		return InstanceState{}, err
+	}
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if state, ok := r.instances[instanceID]; ok {
+		return state, nil
+	}
+	return InstanceState{}, fmt.Errorf("instance %s not found", instanceID)
 }

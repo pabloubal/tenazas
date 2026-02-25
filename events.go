@@ -12,6 +12,16 @@ const (
 	EventStatus       EventType = "status"
 )
 
+const (
+	AuditInfo          = "info"
+	AuditLLMPrompt     = "llm_prompt"
+	AuditLLMResponse   = "llm_response"
+	AuditLLMChunk      = "llm_response_chunk"
+	AuditCmdResult     = "cmd_result"
+	AuditIntervention  = "intervention"
+	AuditStatus        = "status"
+)
+
 type Event struct {
 	Type      EventType
 	SessionID string
@@ -54,6 +64,22 @@ func (eb *EventBus) Publish(e Event) {
 		default: // non-blocking drop if channel is full
 		}
 	}
+}
+
+// FilterForSession wraps a channel to only receive events for a specific session
+func FilterForSession(in chan Event, sessionID string) chan AuditEntry {
+	out := make(chan AuditEntry, 10)
+	go func() {
+		defer close(out)
+		for e := range in {
+			if e.SessionID == sessionID && e.Type == EventAudit {
+				if audit, ok := e.Payload.(AuditEntry); ok {
+					out <- audit
+				}
+			}
+		}
+	}()
+	return out
 }
 
 // Global Event Bus

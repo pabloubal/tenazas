@@ -27,29 +27,45 @@ func main() {
 	exec := NewExecutor(cfg.GeminiBinPath, cfg.StorageDir)
 	engine := NewEngine(sm, exec, cfg.MaxLoops)
 
-	// Start Telegram
-	var tg *Telegram
-	if cfg.TelegramToken != "" {
-		tg = &Telegram{
-			Token:          cfg.TelegramToken,
-			AllowedIDs:     cfg.AllowedUserIDs,
-			UpdateInterval: cfg.UpdateInterval,
-			Sm:             sm,
-			Exec:           exec,
-			Reg:            reg,
-			Engine:         engine,
-		}
-		go tg.Poll()
-		fmt.Println("Telegram bot started.")
-	} else {
-		fmt.Println("Telegram token missing, running in CLI-only mode.")
+	// Start Interfaces
+	tg := setupTelegram(cfg, sm, exec, reg, engine)
+	hb := NewHeartbeatRunner(cfg.StorageDir, sm, engine, tg)
+	go hb.CheckAndRun()
+
+	if *resume {
+		resumeBackgroundSessions(sm, engine, cfg.StorageDir)
 	}
 
-	// Start Heartbeat Runner
-	hb := NewHeartbeatRunner(cfg.StorageDir, sm, engine, tg)
-	go hb.CheckAndRun() // In prod, this would run on a ticker/cron.
+		handleSignals()
+	
+		// Run CLI
+		cli := NewCLI(sm, exec, reg, engine)
+		if err := cli.Run(*resume); err != nil {
+			fmt.Printf("CLI Error: %v\x0a", err)
+		}
+	}
 
-	// Resume any sessions marked as "running" or "intervention_required"
+func setupTelegram(cfg *Config, sm *SessionManager, exec *Executor, reg *Registry, engine *Engine) *Telegram {
+	if cfg.TelegramToken == "" {
+		fmt.Println("Telegram token missing, running in CLI-only mode.")
+		return nil
+	}
+
+	tg := &Telegram{
+		Token:          cfg.TelegramToken,
+		AllowedIDs:     cfg.AllowedUserIDs,
+		UpdateInterval: cfg.UpdateInterval,
+		Sm:             sm,
+		Exec:           exec,
+		Reg:            reg,
+		Engine:         engine,
+	}
+	go tg.Poll()
+	fmt.Println("Telegram bot started.")
+	return tg
+}
+
+func resumeBackgroundSessions(sm *SessionManager, engine *Engine, storageDir string) {
 	go func() {
 		page := 0
 		for {
@@ -58,12 +74,10 @@ func main() {
 				break
 			}
 			for _, s := range sessions {
-				if (s.Status == "running" || s.Status == "intervention_required") && s.SkillName != "" {
-					skill, err := LoadSkill(cfg.StorageDir, s.SkillName)
-					if err == nil {
-						localSess := s // Create local copy
-						fmt.Printf("Resuming task: %s (Skill: %s)\x0a", localSess.ID, localSess.SkillName)
-						go engine.Run(skill, &localSess)
+				if isResumable(&s) {
+					if skill, err := LoadSkill(storageDir, s.SkillName); err == nil {
+						fmt.Printf("Resuming task: %s (Skill: %s)\x0a", s.ID, s.SkillName)
+						go engine.Run(skill, &s)
 					}
 				}
 			}
@@ -73,8 +87,13 @@ func main() {
 			page++
 		}
 	}()
+}
 
-	// Handle signals for cleanup
+func isResumable(s *Session) bool {
+	return (s.Status == StatusRunning || s.Status == StatusIntervention) && s.SkillName != ""
+}
+
+func handleSignals() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
@@ -82,16 +101,4 @@ func main() {
 		fmt.Println("\x0aExiting...")
 		os.Exit(0)
 	}()
-
-	// Start CLI
-	cli := &CLI{
-		Sm:     sm,
-		Exec:   exec,
-		Reg:    reg,
-		Engine: engine,
-	}
-
-	if err := cli.Run(*resume); err != nil {
-		fmt.Printf("CLI Error: %v\x0a", err)
-	}
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -15,27 +16,25 @@ type CLI struct {
 	Exec   *Executor
 	Reg    *Registry
 	Engine *Engine
+	In     io.Reader
+	Out    io.Writer
+}
+
+func NewCLI(sm *SessionManager, exec *Executor, reg *Registry, engine *Engine) *CLI {
+	return &CLI{
+		Sm:     sm,
+		Exec:   exec,
+		Reg:    reg,
+		Engine: engine,
+		In:     os.Stdin,
+		Out:    os.Stdout,
+	}
 }
 
 func (c *CLI) Run(resume bool) error {
-	var sess *Session
-
-	if resume {
-		// Simplified resume for CLI, mostly rely on Telegram for rich UX
-		sess, _ = c.Sm.GetLatest()
-	} else {
-		cwd, _ := os.Getwd()
-		sess = &Session{
-			ID:          uuid.New().String(),
-			CWD:         cwd,
-			LastUpdated: time.Now(),
-			RoleCache:   make(map[string]string),
-		}
-		c.Sm.Save(sess)
-	}
-
-	if sess == nil {
-		fmt.Println("No sessions available.")
+	sess, err := c.initializeSession(resume)
+	if err != nil {
+		fmt.Fprintln(c.Out, "Error:", err)
 		return nil
 	}
 
@@ -43,102 +42,115 @@ func (c *CLI) Run(resume bool) error {
 	c.Reg.Set(instanceID, sess.ID)
 	c.Reg.SetVerbosity(instanceID, "HIGH")
 
-	fmt.Printf("Connected to session %s (Path: %s)\x0a", sess.ID, sess.CWD)
-	fmt.Println("Commands: /run <skill>, /last <N>, /intervene <action>")
+	fmt.Fprintf(c.Out, "Connected to session %s (Path: %s)\x0a", sess.ID, sess.CWD)
+	fmt.Fprintln(c.Out, "Commands: /run <skill>, /last <N>, /intervene <action>")
 
-	// If session has a skill, ensure it's running
-	if sess.SkillName != "" {
-		skill, err := LoadSkill(c.Sm.StoragePath, sess.SkillName)
-		if err == nil {
-			if sess.Status != "running" && sess.Status != "intervention_required" {
-				fmt.Printf("Resuming task: %s (Skill: %s)\x0a", sess.ID, sess.SkillName)
-				sess.Status = "running"
-				c.Sm.Save(sess)
-			}
-			go c.Engine.Run(skill, sess)
-		}
+	if resume && sess.SkillName != "" {
+		c.resumeSkill(sess)
 	}
 
-	// Subscribe to events
-	eventCh := GlobalBus.Subscribe()
-	go func() {
-		for e := range eventCh {
-			if e.SessionID == sess.ID && e.Type == EventAudit {
-				audit := e.Payload.(AuditEntry)
-				if audit.Type == "llm_response_chunk" {
-					fmt.Print(audit.Content)
-					continue
-				}
+	go c.listenEvents(sess.ID)
 
-				// High-visibility markers
-				switch audit.Type {
-				case "info":
-					fmt.Printf("\x0a\x1b[34;1m🟦 %s\x1b[0m\x0a", audit.Content) // Bold Blue
-				case "llm_prompt":
-					fmt.Printf("\x0a\x1b[33m🟡 PROMPT (%s):\x1b[0m\x0a\x1b[90m%s\x1b[0m\x0a", audit.Source, audit.Content) // Yellow header, gray prompt
-				case "llm_response":
-					fmt.Printf("\x0a\x1b[32;1m🟢 RESPONSE:\x1b[0m\x0a%s\x0a", audit.Content) // Bold Green
-				case "cmd_result":
-					color := "32" // Green
-					icon := "✅"
-					if !strings.Contains(audit.Content, "Exit Code: 0") {
-						color = "31" // Red
-						icon = "❌"
-					}
-					fmt.Printf("\x0a\x1b[%s;1m%s COMMAND RESULT:\x1b[0m\x0a\x1b[90m%s\x1b[0m\x0a", color, icon, audit.Content)
-				case "intervention":
-					fmt.Printf("\x0a\x1b[31;1m⚠️ INTERVENTION REQUIRED:\x1b[0m\x0a%s\x0a", audit.Content)
-					fmt.Print("\x0aType `/intervene <retry|proceed_to_fail|abort>`\x0a> ")
-				default:
-					fmt.Printf("\x0a[%s] %s\x0a", audit.Type, audit.Content)
-				}
+	return c.repl(sess)
+}
+
+func (c *CLI) initializeSession(resume bool) (*Session, error) {
+	if resume {
+		return c.Sm.GetLatest()
+	}
+	
+	cwd, _ := os.Getwd()
+	sess := &Session{
+		ID:          uuid.New().String(),
+		CWD:         cwd,
+		LastUpdated: time.Now(),
+		RoleCache:   make(map[string]string),
+	}
+	c.Sm.Save(sess)
+	return sess, nil
+}
+
+func (c *CLI) resumeSkill(sess *Session) {
+	skill, err := LoadSkill(c.Sm.StoragePath, sess.SkillName)
+	if err == nil {
+		if sess.Status != StatusRunning && sess.Status != StatusIntervention {
+			fmt.Fprintf(c.Out, "Resuming task: %s (Skill: %s)\x0a", sess.ID, sess.SkillName)
+			sess.Status = StatusRunning
+			c.Sm.Save(sess)
+		}
+		go c.Engine.Run(skill, sess)
+	}
+}
+
+func (c *CLI) listenEvents(sessionID string) {
+	eventCh := GlobalBus.Subscribe()
+	formatter := &AnsiFormatter{}
+	
+	for e := range eventCh {
+		if e.SessionID == sessionID && e.Type == EventAudit {
+			audit := e.Payload.(AuditEntry)
+			if audit.Type == AuditLLMChunk {
+				fmt.Fprint(c.Out, audit.Content)
+				continue
+			}
+
+			fmt.Fprintf(c.Out, "\x0a%s\x0a", formatter.Format(audit))
+			if audit.Type == AuditIntervention {
+				fmt.Fprint(c.Out, "\x0aType `/intervene <retry|proceed_to_fail|abort>`\x0a> ")
 			}
 		}
-	}()
+	}
+}
 
-	scanner := bufio.NewScanner(os.Stdin)
+func (c *CLI) repl(sess *Session) error {
+	scanner := bufio.NewScanner(c.In)
 	for {
-		fmt.Print("\x0a> ")
+		fmt.Fprint(c.Out, "\x0a> ")
 		if !scanner.Scan() {
-			break
+			return io.EOF
 		}
 		text := scanner.Text()
 		if text == "" {
 			continue
 		}
 
-		if strings.HasPrefix(text, "/run ") {
-			skillName := strings.TrimPrefix(text, "/run ")
-			skill, err := LoadSkill(c.Sm.StoragePath, skillName)
-			if err != nil {
-				fmt.Println("Skill error:", err)
-				continue
-			}
-			sess.SkillName = skillName
-			c.Sm.Save(sess)
-			go c.Engine.Run(skill, sess)
-			continue
-		}
+		parts := strings.Fields(text)
+		cmd := parts[0]
 
-		if strings.HasPrefix(text, "/last ") {
+		switch cmd {
+		case "/run":
+			if len(parts) > 1 {
+				c.handleRun(sess, parts[1])
+			}
+		case "/last":
 			n := 5
-			fmt.Sscanf(strings.TrimPrefix(text, "/last "), "%d", &n)
-			logs, _ := c.Sm.GetLastAudit(sess, n)
-			for _, l := range logs {
-				fmt.Printf("[%s] %s: %s\x0a", l.Timestamp.Format("15:04"), l.Type, l.Content)
+			if len(parts) > 1 { fmt.Sscanf(parts[1], "%d", &n) }
+			c.handleLast(sess, n)
+		case "/intervene":
+			if len(parts) > 1 {
+				c.Engine.ResolveIntervention(sess.ID, parts[1])
 			}
-			continue
+		default:
+			go c.Engine.ExecutePrompt(sess, text)
 		}
-
-		if strings.HasPrefix(text, "/intervene ") {
-			action := strings.TrimPrefix(text, "/intervene ")
-			c.Engine.ResolveIntervention(sess.ID, action)
-			continue
-		}
-
-		// Default: Execute raw prompt
-		go c.Engine.ExecutePrompt(sess, text)
 	}
+}
 
-	return nil
+func (c *CLI) handleRun(sess *Session, skillName string) {
+	skill, err := LoadSkill(c.Sm.StoragePath, skillName)
+	if err != nil {
+		fmt.Fprintln(c.Out, "Skill error:", err)
+		return
+	}
+	sess.SkillName = skillName
+	c.Sm.Save(sess)
+	go c.Engine.Run(skill, sess)
+}
+
+func (c *CLI) handleLast(sess *Session, n int) {
+	logs, _ := c.Sm.GetLastAudit(sess, n)
+	formatter := &AnsiFormatter{}
+	for _, l := range logs {
+		fmt.Fprintln(c.Out, formatter.Format(l))
+	}
 }

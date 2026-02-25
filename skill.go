@@ -6,18 +6,15 @@ import (
 	"path/filepath"
 )
 
-func LoadSkill(storageDir string, skillName string) (*SkillGraph, error) {
-	// First try ~/.tenazas/skills/
-	path := filepath.Join(storageDir, "skills", skillName+".json")
+func (sm *SessionManager) LoadSkill(skillName string) (*SkillGraph, error) {
+	path := sm.storage.ResolveSkillPath(skillName)
+	if path == "" {
+		return nil, os.ErrNotExist
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
-		// Fallback to local ./skills directory if running directly
-		cwd, _ := os.Getwd()
-		path = filepath.Join(cwd, "skills", skillName+".json")
-		data, err = os.ReadFile(path)
-		if err != nil {
-			return nil, err
-		}
+		return nil, err
 	}
 
 	var skill SkillGraph
@@ -25,6 +22,12 @@ func LoadSkill(storageDir string, skillName string) (*SkillGraph, error) {
 		return nil, err
 	}
 	return &skill, nil
+}
+
+// Maintaining the global LoadSkill for compatibility, but it should ideally use SessionManager
+func LoadSkill(storageDir string, skillName string) (*SkillGraph, error) {
+	sm := NewSessionManager(storageDir)
+	return sm.LoadSkill(skillName)
 }
 
 func ListSkills(storageDir string) ([]string, error) {

@@ -12,91 +12,109 @@ import (
 
 type SessionManager struct {
 	StoragePath string
+	storage     *Storage
 }
 
 func NewSessionManager(storagePath string) *SessionManager {
-	return &SessionManager{StoragePath: storagePath}
+	return &SessionManager{
+		StoragePath: storagePath,
+		storage:     NewStorage(storagePath),
+	}
 }
 
-func (sm *SessionManager) getWorkspaceDir(cwd string) string {
-	slug := strings.ReplaceAll(cwd, "/", "-")
-	if strings.HasPrefix(slug, "-") {
-		slug = slug[1:]
+// updateIndex tracks session ID -> CWD for fast O(1) lookups
+func (sm *SessionManager) updateIndex(id, cwd string) {
+	indexPath := filepath.Join(sm.StoragePath, "sessions", ".index")
+	os.MkdirAll(indexPath, 0755)
+	os.WriteFile(filepath.Join(indexPath, id), []byte(cwd), 0644)
+}
+
+func (sm *SessionManager) getCWDFromIndex(id string) string {
+	indexPath := filepath.Join(sm.StoragePath, "sessions", ".index", id)
+	if data, err := os.ReadFile(indexPath); err == nil {
+		return string(data)
 	}
-	return filepath.Join(sm.StoragePath, "sessions", slug)
+	return ""
 }
 
 func (sm *SessionManager) Save(s *Session) error {
 	s.LastUpdated = time.Now()
-	data, err := json.MarshalIndent(s, "", "  ")
-	if err != nil {
+	relPath := filepath.Join(sm.storage.WorkspaceDir(s.CWD), s.ID+".meta.json")
+	if err := sm.storage.WriteJSON(relPath, s); err != nil {
 		return err
 	}
-	dir := sm.getWorkspaceDir(s.CWD)
-	os.MkdirAll(dir, 0755)
-	fPath := filepath.Join(dir, s.ID+".meta.json")
-	return os.WriteFile(fPath, data, 0644)
+	sm.updateIndex(s.ID, s.CWD)
+	return nil
 }
 
 func (sm *SessionManager) Load(id string) (*Session, error) {
-	// Since we don't know the CWD, we must scan the workspace dirs
-	dir := filepath.Join(sm.StoragePath, "sessions")
-	wdirs, _ := os.ReadDir(dir)
-	for _, wd := range wdirs {
-		if !wd.IsDir() {
-			continue
-		}
-		fPath := filepath.Join(dir, wd.Name(), id+".meta.json")
-		if data, err := os.ReadFile(fPath); err == nil {
-			var s Session
-			if err := json.Unmarshal(data, &s); err != nil {
-				return nil, err
-			}
-			if s.RoleCache == nil {
-				s.RoleCache = make(map[string]string)
-			}
+	// Fast path: Registry/Index lookup
+	if cwd := sm.getCWDFromIndex(id); cwd != "" {
+		relPath := filepath.Join(sm.storage.WorkspaceDir(cwd), id+".meta.json")
+		var s Session
+		if err := sm.storage.ReadJSON(relPath, &s); err == nil {
 			return &s, nil
 		}
 	}
-	return nil, fmt.Errorf("session not found")
+
+	// Fallback: Systematic scan (for recovery)
+	root := filepath.Join(sm.StoragePath, "sessions")
+	wdirs, _ := os.ReadDir(root)
+	for _, wd := range wdirs {
+		if !wd.IsDir() || wd.Name() == ".index" {
+			continue
+		}
+		fPath := filepath.Join(root, wd.Name(), id+".meta.json")
+		if _, err := os.Stat(fPath); err == nil {
+			var s Session
+			if err := sm.storage.ReadJSON(filepath.Join("sessions", wd.Name(), id+".meta.json"), &s); err == nil {
+				sm.updateIndex(id, s.CWD) 
+				return &s, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("session %s not found", id)
+}
+
+func (sm *SessionManager) GetLatest() (*Session, error) {
+	sessions, _, err := sm.List(0, 1)
+	if err != nil || len(sessions) == 0 {
+		return nil, fmt.Errorf("no sessions found")
+	}
+	return &sessions[0], nil
 }
 
 func (sm *SessionManager) List(page, pageSize int) ([]Session, int, error) {
-	dir := filepath.Join(sm.StoragePath, "sessions")
-	wdirs, err := os.ReadDir(dir)
+	root := filepath.Join(sm.StoragePath, "sessions")
+	wdirs, err := os.ReadDir(root)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	var sessions []Session
+	type metaEntry struct {
+		path string
+		mod  time.Time
+	}
+	var entries []metaEntry
+
 	for _, wd := range wdirs {
-		if !wd.IsDir() {
+		if !wd.IsDir() || wd.Name() == ".index" {
 			continue
 		}
-		subdir := filepath.Join(dir, wd.Name())
+		subdir := filepath.Join(root, wd.Name())
 		files, _ := os.ReadDir(subdir)
 		for _, f := range files {
 			if strings.HasSuffix(f.Name(), ".meta.json") {
-				fPath := filepath.Join(subdir, f.Name())
-				data, err := os.ReadFile(fPath)
-				if err == nil {
-					var s Session
-					if err := json.Unmarshal(data, &s); err == nil {
-						if s.RoleCache == nil {
-							s.RoleCache = make(map[string]string)
-						}
-						sessions = append(sessions, s)
-					}
-				}
+				info, _ := f.Info()
+				entries = append(entries, metaEntry{filepath.Join(subdir, f.Name()), info.ModTime()})
 			}
 		}
 	}
 
-	sort.Slice(sessions, func(i, j int) bool {
-		return sessions[i].LastUpdated.After(sessions[j].LastUpdated)
-	})
+	// Sort by modification time (descending)
+	sort.Slice(entries, func(i, j int) bool { return entries[i].mod.After(entries[j].mod) })
 
-	total := len(sessions)
+	total := len(entries)
 	start := page * pageSize
 	if start >= total {
 		return nil, total, nil
@@ -106,46 +124,45 @@ func (sm *SessionManager) List(page, pageSize int) ([]Session, int, error) {
 		end = total
 	}
 
-	return sessions[start:end], total, nil
-}
-
-func (sm *SessionManager) GetLatest() (*Session, error) {
-	list, _, err := sm.List(0, 1)
-	if err != nil || len(list) == 0 {
-		return nil, fmt.Errorf("no sessions found")
+	// PERFORMANCE: Only unmarshal requested page
+	sessions := make([]Session, 0, end-start)
+	for _, e := range entries[start:end] {
+		var s Session
+		data, _ := os.ReadFile(e.path)
+		if json.Unmarshal(data, &s) == nil {
+			sessions = append(sessions, s)
+		}
 	}
-	return &list[0], nil
+
+	return sessions, total, nil
 }
 
 func (sm *SessionManager) AppendAudit(s *Session, entry AuditEntry) error {
-	entry.Timestamp = time.Now()
-	dir := sm.getWorkspaceDir(s.CWD)
-	os.MkdirAll(dir, 0755)
-	fPath := filepath.Join(dir, s.ID+".audit.jsonl")
+	if entry.Timestamp.IsZero() {
+		entry.Timestamp = time.Now()
+	}
+	
+	relDir := sm.storage.WorkspaceDir(s.CWD)
+	fPath := filepath.Join(sm.StoragePath, relDir, s.ID+".audit.jsonl")
+	
 	f, err := os.OpenFile(fPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	data, err := json.Marshal(entry)
-	if err != nil {
-		return err
-	}
-	_, err = f.Write(append(data, '\n'))
-	
-	GlobalBus.Publish(Event{
-		Type:      EventAudit,
-		SessionID: s.ID,
-		Payload:   entry,
-	})
-	
+	data, _ := json.Marshal(entry)
+	data = append(data, '\n')
+	_, err = f.Write(data)
+
+	// DRY: Publish events directly from the source of truth
+	GlobalBus.Publish(Event{Type: EventAudit, SessionID: s.ID, Payload: entry})
 	return err
 }
 
 func (sm *SessionManager) GetLastAudit(s *Session, n int) ([]AuditEntry, error) {
-	dir := sm.getWorkspaceDir(s.CWD)
-	fPath := filepath.Join(dir, s.ID+".audit.jsonl")
+	relDir := sm.storage.WorkspaceDir(s.CWD)
+	fPath := filepath.Join(sm.StoragePath, relDir, s.ID+".audit.jsonl")
 	f, err := os.Open(fPath)
 	if err != nil {
 		return nil, err
@@ -154,12 +171,11 @@ func (sm *SessionManager) GetLastAudit(s *Session, n int) ([]AuditEntry, error) 
 
 	var all []AuditEntry
 	decoder := json.NewDecoder(f)
-	for {
+	for decoder.More() {
 		var entry AuditEntry
-		if err := decoder.Decode(&entry); err != nil {
-			break
+		if err := decoder.Decode(&entry); err == nil {
+			all = append(all, entry)
 		}
-		all = append(all, entry)
 	}
 
 	if n > len(all) {

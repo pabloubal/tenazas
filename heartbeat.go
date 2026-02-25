@@ -55,7 +55,7 @@ func (h *HeartbeatRunner) CheckAndRun() {
 }
 
 func (h *HeartbeatRunner) Trigger(hb Heartbeat) {
-	skill, err := LoadSkill(h.configDir, hb.Skill)
+	skill, err := h.sm.LoadSkill(hb.Skill)
 	if err != nil {
 		return
 	}
@@ -69,10 +69,12 @@ func (h *HeartbeatRunner) Trigger(hb Heartbeat) {
 		Status:      "idle",
 		RoleCache:   make(map[string]string),
 	}
-	h.sm.Save(sess)
+	if err := h.sm.Save(sess); err != nil {
+		return
+	}
 
 	if h.tg != nil {
-		msg := fmt.Sprintf("Beep! 🤖 My heartbeat noticed a trigger for <b>%s</b>. I am spinning up a background session to investigate.\x0aPath: <code>%s</code>", hb.Name, hb.Path)
+		msg := fmt.Sprintf("Beep! 🤖 My heartbeat noticed a trigger for <b>%s</b>. Background session started.\x0aPath: <code>%s</code>", hb.Name, hb.Path)
 		for _, aid := range h.tg.AllowedIDs {
 			h.tg.NotifyWithButton(aid, msg, "👁️ Watch Session", "res:"+sess.ID)
 		}
@@ -81,7 +83,7 @@ func (h *HeartbeatRunner) Trigger(hb Heartbeat) {
 	h.engine.Run(skill, sess)
 	
 	if h.tg != nil {
-		msg := fmt.Sprintf("🏁 Heartbeat <b>%s</b> has finished with status: <b>%s</b>", hb.Name, sess.Status)
+		msg := fmt.Sprintf("🏁 Heartbeat <b>%s</b> finished with status: <b>%s</b>", hb.Name, sess.Status)
 		for _, aid := range h.tg.AllowedIDs {
 			h.tg.NotifyWithButton(aid, msg, "🔍 Review Log", "res:"+sess.ID)
 		}

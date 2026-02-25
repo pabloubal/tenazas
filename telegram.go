@@ -30,7 +30,7 @@ type tgLiveStream struct {
 	lastEdit time.Time
 }
 
-// ... basic structs
+// Telegram API Structs
 type TgUpdate struct {
 	UpdateID int64 `json:"update_id"`
 	Message  struct {
@@ -96,18 +96,19 @@ func (tg *Telegram) Poll() {
 		}
 
 		var res TgResponse
-		json.Unmarshal(data, &res)
+		if err := json.Unmarshal(data, &res); err != nil {
+			continue
+		}
+		
 		for _, upd := range res.Result {
 			tg.lastUpdateID = upd.UpdateID
+			if !tg.IsAllowed(upd.Message.From.ID) && !tg.IsAllowed(upd.CallbackQuery.From.ID) {
+				continue
+			}
+
 			if upd.Message.Text != "" {
-				if !tg.IsAllowed(upd.Message.From.ID) {
-					continue
-				}
 				go tg.HandleMessage(upd.Message.From.ID, upd.Message.Text)
 			} else if upd.CallbackQuery.Data != "" {
-				if !tg.IsAllowed(upd.CallbackQuery.From.ID) {
-					continue
-				}
 				go tg.HandleCallback(upd.CallbackQuery.From.ID, upd.CallbackQuery.Data)
 			}
 		}
@@ -115,20 +116,19 @@ func (tg *Telegram) Poll() {
 }
 
 func (tg *Telegram) listenEvents(ch chan Event) {
+	formatter := &HtmlFormatter{}
 	for e := range ch {
 		if e.Type == EventAudit {
-			audit := e.Payload.(AuditEntry)
-			tg.broadcastAudit(e.SessionID, audit)
+			tg.broadcastAudit(e.SessionID, e.Payload.(AuditEntry), formatter)
 		}
 	}
 }
 
-func (tg *Telegram) broadcastAudit(sessionID string, audit AuditEntry) {
+func (tg *Telegram) broadcastAudit(sessionID string, audit AuditEntry, f *HtmlFormatter) {
 	if tg.activeMessages == nil {
 		tg.activeMessages = make(map[string]*tgLiveStream)
 	}
 
-	// Find users focused on this session
 	for _, id := range tg.AllowedIDs {
 		instanceID := fmt.Sprintf("tg-%d", id)
 		state, err := tg.Reg.Get(instanceID)
@@ -136,112 +136,111 @@ func (tg *Telegram) broadcastAudit(sessionID string, audit AuditEntry) {
 			continue
 		}
 
-		// Handle live streaming chunks
-		if audit.Type == "llm_response_chunk" {
-			stream, ok := tg.activeMessages[sessionID]
-			if !ok {
-				msgData, _ := tg.Call("sendMessage", map[string]interface{}{
-					"chat_id":    id,
-					"text":       "<i>...</i>",
-					"parse_mode": "HTML",
-				})
-				var msgRes TgMessageResponse
-				json.Unmarshal(msgData, &msgRes)
-				stream = &tgLiveStream{msgID: msgRes.Result.MessageID, lastEdit: time.Now()}
-				tg.activeMessages[sessionID] = stream
-			}
-
-			stream.fullText += audit.Content
-			if time.Since(stream.lastEdit) > time.Duration(tg.UpdateInterval)*time.Millisecond {
-				tg.Call("editMessageText", map[string]interface{}{
-					"chat_id":    id,
-					"message_id": stream.msgID,
-					"text":       formatHTML(stream.fullText),
-					"parse_mode": "HTML",
-				})
-				stream.lastEdit = time.Now()
-			}
-			continue
-		}
-
-		// Handle final response
-		if audit.Type == "llm_response" {
-			if stream, ok := tg.activeMessages[sessionID]; ok {
-				tg.Call("editMessageText", map[string]interface{}{
-					"chat_id":    id,
-					"message_id": stream.msgID,
-					"text":       "🟢 <b>RESPONSE:</b>\x0a" + formatHTML(audit.Content),
-					"parse_mode": "HTML",
-				})
-				delete(tg.activeMessages, sessionID)
-			} else {
-				tg.Call("sendMessage", map[string]interface{}{
-					"chat_id":    id,
-					"text":       "🟢 <b>RESPONSE:</b>\x0a" + formatHTML(audit.Content),
-					"parse_mode": "HTML",
-				})
-			}
-			continue
-		}
-
-		// Verbosity Check for other events
-		if state.Verbosity == "LOW" && audit.Type != "intervention" && audit.Type != "status" {
-			continue
-		}
-		if state.Verbosity == "MEDIUM" && audit.Type != "intervention" && audit.Type != "info" {
-			continue
-		}
-
-		prefix := ""
-		suffix := ""
-		sess, _ := tg.Sm.Load(sessionID)
-		if sess.Yolo {
-			prefix = "⚠️ <b>YOLO MODE ACTIVE</b> ⚠️\x0a\x0a"
-			suffix = "\x0a\x0a⚠️ <b>YOLO MODE ACTIVE</b> ⚠️"
-		}
-
-		content := formatHTML(audit.Content)
+		// Handle Streaming vs Discrete events
 		switch audit.Type {
-		case "info":
-			if strings.HasPrefix(audit.Content, "Started skill") || strings.HasPrefix(audit.Content, "Running") || strings.HasPrefix(audit.Content, "Executing") {
-				content = "🟦 <b>" + content + "</b>"
-			} else {
-				content = "ℹ️ <i>" + content + "</i>"
+		case AuditLLMChunk:
+			tg.handleStreamingChunk(id, sessionID, audit.Content, f)
+		case AuditLLMResponse:
+			tg.handleStreamingEnd(id, sessionID, audit.Content, f)
+		default:
+			if tg.shouldDisplay(state.Verbosity, audit.Type) {
+				tg.sendAuditMessage(id, sessionID, audit, f)
 			}
-		case "llm_prompt":
-			content = "🟡 <b>PROMPT (" + audit.Source + "):</b>\x0a<code>" + content + "</code>"
-		case "cmd_result":
-			icon := "✅"
-			if !strings.Contains(audit.Content, "Exit Code: 0") {
-				icon = "❌"
-			}
-			content = icon + " <b>COMMAND RESULT:</b>\x0a<pre>" + content + "</pre>"
-		case "intervention":
-			tg.Call("sendMessage", map[string]interface{}{
-				"chat_id":    id,
-				"text":       prefix + "⚠️ <b>Intervention Required</b>\x0a" + content + suffix,
-				"parse_mode": "HTML",
-				"reply_markup": map[string]interface{}{
-					"inline_keyboard": [][]map[string]interface{}{
-						{
-							{"text": "🔄 Retry", "callback_data": "intv:retry:" + sessionID},
-							{"text": "⏩ Proceed to Fail", "callback_data": "intv:proceed_to_fail:" + sessionID},
-						},
-						{
-							{"text": "🛑 Abort", "callback_data": "intv:abort:" + sessionID},
-						},
-					},
-				},
-			})
-			continue
 		}
+	}
+}
 
+func (tg *Telegram) shouldDisplay(verbosity, auditType string) bool {
+	switch verbosity {
+	case "LOW":
+		return auditType == AuditIntervention || auditType == AuditStatus
+	case "MEDIUM":
+		return auditType == AuditIntervention || auditType == AuditInfo || auditType == AuditStatus
+	case "HIGH":
+		return true
+	}
+	return false
+}
+
+func (tg *Telegram) sendAuditMessage(chatID int64, sessionID string, audit AuditEntry, f *HtmlFormatter) {
+	prefix, suffix := "", ""
+	if sess, _ := tg.Sm.Load(sessionID); sess != nil && sess.Yolo {
+		prefix, suffix = "⚠️ <b>YOLO MODE</b> ⚠️\x0a\x0a", "\x0a\x0a⚠️ <b>YOLO MODE</b> ⚠️"
+	}
+
+	content := f.Format(audit)
+	if audit.Type == AuditIntervention {
+		tg.sendIntervention(chatID, sessionID, prefix+content+suffix)
+	} else {
 		tg.Call("sendMessage", map[string]interface{}{
-			"chat_id":    id,
+			"chat_id":    chatID,
 			"text":       prefix + content + suffix,
 			"parse_mode": "HTML",
 		})
 	}
+}
+
+func (tg *Telegram) handleStreamingChunk(id int64, sessionID, content string, f *HtmlFormatter) {
+	stream, ok := tg.activeMessages[sessionID]
+	if !ok {
+		msgData, _ := tg.Call("sendMessage", map[string]interface{}{
+			"chat_id":    id,
+			"text":       "<i>...</i>",
+			"parse_mode": "HTML",
+		})
+		var msgRes TgMessageResponse
+		json.Unmarshal(msgData, &msgRes)
+		stream = &tgLiveStream{msgID: msgRes.Result.MessageID, lastEdit: time.Now()}
+		tg.activeMessages[sessionID] = stream
+	}
+	
+	stream.fullText += content
+	if time.Since(stream.lastEdit) > time.Duration(tg.UpdateInterval)*time.Millisecond {
+		tg.Call("editMessageText", map[string]interface{}{
+			"chat_id":    id,
+			"message_id": stream.msgID,
+			"text":       f.escape(stream.fullText),
+			"parse_mode": "HTML",
+		})
+		stream.lastEdit = time.Now()
+	}
+}
+
+func (tg *Telegram) handleStreamingEnd(id int64, sessionID, content string, f *HtmlFormatter) {
+	if stream, ok := tg.activeMessages[sessionID]; ok {
+		tg.Call("editMessageText", map[string]interface{}{
+			"chat_id":    id,
+			"message_id": stream.msgID,
+			"text":       "🟢 <b>RESPONSE:</b>\x0a" + f.escape(content),
+			"parse_mode": "HTML",
+		})
+		delete(tg.activeMessages, sessionID)
+	} else {
+		tg.Call("sendMessage", map[string]interface{}{
+			"chat_id":    id,
+			"text":       "🟢 <b>RESPONSE:</b>\x0a" + f.escape(content),
+			"parse_mode": "HTML",
+		})
+	}
+}
+
+func (tg *Telegram) sendIntervention(id int64, sessionID, text string) {
+	tg.Call("sendMessage", map[string]interface{}{
+		"chat_id":    id,
+		"text":       text,
+		"parse_mode": "HTML",
+		"reply_markup": map[string]interface{}{
+			"inline_keyboard": [][]map[string]interface{}{
+				{
+					{"text": "🔄 Retry", "callback_data": "intv:retry:" + sessionID},
+					{"text": "⏩ Proceed", "callback_data": "intv:proceed_to_fail:" + sessionID},
+				},
+				{
+					{"text": "🛑 Abort", "callback_data": "intv:abort:" + sessionID},
+				},
+			},
+		},
+	})
 }
 
 func (tg *Telegram) NotifyWithButton(chatID int64, text, btnText, callbackData string) {
@@ -260,181 +259,181 @@ func (tg *Telegram) NotifyWithButton(chatID int64, text, btnText, callbackData s
 func (tg *Telegram) HandleMessage(chatID int64, text string) {
 	instanceID := fmt.Sprintf("tg-%d", chatID)
 
-	if strings.HasPrefix(text, "/verbosity ") {
-		v := strings.ToUpper(strings.TrimPrefix(text, "/verbosity "))
-		if v == "LOW" || v == "MEDIUM" || v == "HIGH" {
-			tg.Reg.SetVerbosity(instanceID, v)
-			tg.Call("sendMessage", map[string]interface{}{"chat_id": chatID, "text": "Verbosity set to " + v})
-		}
+	if strings.HasPrefix(text, "/") {
+		tg.handleCommand(chatID, instanceID, text)
 		return
 	}
 
-	if text == "/yolo" {
-		state, err := tg.Reg.Get(instanceID)
-		if err == nil {
-			sess, _ := tg.Sm.Load(state.SessionID)
-			sess.Yolo = !sess.Yolo
-			tg.Sm.Save(sess)
-			status := "<b>OFF</b>"
-			if sess.Yolo {
-				status = "<b>ON</b>"
-			}
-			tg.Call("sendMessage", map[string]interface{}{"chat_id": chatID, "text": "⚠️ YOLO Mode is now " + status, "parse_mode": "HTML"})
-		}
-		return
-	}
-
-	if text == "/resume" {
-		sessions, _, _ := tg.Sm.List(0, 50)
-		cwds := make(map[string]bool)
-		var buttons [][]map[string]interface{}
-		
-		for _, s := range sessions {
-			if !cwds[s.CWD] {
-				cwds[s.CWD] = true
-				hash := fmt.Sprintf("%x", md5.Sum([]byte(s.CWD)))[:8]
-				buttons = append(buttons, []map[string]interface{}{
-					{"text": "📂 " + filepath.Base(s.CWD), "callback_data": "dir:" + hash},
-				})
-			}
-		}
-
-		tg.Call("sendMessage", map[string]interface{}{
-			"chat_id":      chatID,
-			"text":         "<i>Select Workspace:</i>",
-			"parse_mode":   "HTML",
-			"reply_markup": map[string]interface{}{"inline_keyboard": buttons},
-		})
-		return
-	}
-
-	// Active session handler
 	state, err := tg.Reg.Get(instanceID)
 	if err != nil {
 		tg.Call("sendMessage", map[string]interface{}{"chat_id": chatID, "text": "No active session."})
 		return
 	}
 
-	if strings.HasPrefix(text, "/run ") {
-		skillName := strings.TrimPrefix(text, "/run ")
-		skill, err := LoadSkill(tg.Sm.StoragePath, skillName)
-		if err != nil {
-			tg.Call("sendMessage", map[string]interface{}{"chat_id": chatID, "text": "Skill not found: " + err.Error()})
-			return
-		}
-		sess, _ := tg.Sm.Load(state.SessionID)
-		sess.Title = "Task: " + skill.Name
-		sess.SkillName = skillName
-		tg.Sm.Save(sess)
-		tg.Call("sendMessage", map[string]interface{}{"chat_id": chatID, "text": "Running skill " + skill.Name})
-		go tg.Engine.Run(skill, sess)
+	sess, err := tg.Sm.Load(state.SessionID)
+	if err != nil {
+		tg.Call("sendMessage", map[string]interface{}{"chat_id": chatID, "text": "Session load failed."})
 		return
 	}
 
-	if strings.HasPrefix(text, "/last ") {
-		nStr := strings.TrimPrefix(text, "/last ")
-		n := 5
-		fmt.Sscanf(nStr, "%d", &n)
-		sess, _ := tg.Sm.Load(state.SessionID)
-		logs, _ := tg.Sm.GetLastAudit(sess, n)
-		
-		var buf bytes.Buffer
-		buf.WriteString("<b>Last entries:</b>\x0a")
-		for _, l := range logs {
-			buf.WriteString(fmt.Sprintf("[%s] %s: %s\x0a", l.Timestamp.Format("15:04"), l.Type, l.Content))
-		}
-		tg.Call("sendMessage", map[string]interface{}{"chat_id": chatID, "text": formatHTML(buf.String()), "parse_mode": "HTML"})
-		return
-	}
-
-	// Just a raw message, trigger LLM
-	sess, _ := tg.Sm.Load(state.SessionID)
 	go tg.Engine.ExecutePrompt(sess, text)
+}
+
+func (tg *Telegram) handleCommand(chatID int64, instanceID, text string) {
+	parts := strings.Fields(text)
+	cmd := parts[0]
+
+	switch cmd {
+	case "/verbosity":
+		if len(parts) > 1 {
+			v := strings.ToUpper(parts[1])
+			if v == "LOW" || v == "MEDIUM" || v == "HIGH" {
+				tg.Reg.SetVerbosity(instanceID, v)
+				tg.Call("sendMessage", map[string]interface{}{"chat_id": chatID, "text": "Verbosity set to " + v})
+			}
+		}
+	case "/yolo":
+		tg.toggleYolo(chatID, instanceID)
+	case "/resume":
+		tg.showResumeMenu(chatID)
+	case "/run":
+		if len(parts) > 1 {
+			tg.startSkill(chatID, instanceID, parts[1])
+		}
+	case "/last":
+		n := 5
+		if len(parts) > 1 {
+			fmt.Sscanf(parts[1], "%d", &n)
+		}
+		tg.showLastLogs(chatID, instanceID, n)
+	default:
+		tg.Call("sendMessage", map[string]interface{}{"chat_id": chatID, "text": "Unknown command: " + cmd})
+	}
+}
+
+func (tg *Telegram) toggleYolo(chatID int64, instanceID string) {
+	state, err := tg.Reg.Get(instanceID)
+	if err != nil { return }
+	sess, _ := tg.Sm.Load(state.SessionID)
+	sess.Yolo = !sess.Yolo
+	tg.Sm.Save(sess)
+	status := "OFF"
+	if sess.Yolo { status = "ON" }
+	tg.Call("sendMessage", map[string]interface{}{
+		"chat_id": chatID, 
+		"text": "⚠️ YOLO Mode is now <b>" + status + "</b>", 
+		"parse_mode": "HTML",
+	})
+}
+
+func (tg *Telegram) startSkill(chatID int64, instanceID, skillName string) {
+	skill, err := LoadSkill(tg.Sm.StoragePath, skillName)
+	if err != nil {
+		tg.Call("sendMessage", map[string]interface{}{"chat_id": chatID, "text": "Skill not found: " + err.Error()})
+		return
+	}
+	
+	state, _ := tg.Reg.Get(instanceID)
+	sess, _ := tg.Sm.Load(state.SessionID)
+	sess.Title = "Task: " + skill.Name
+	sess.SkillName = skillName
+	tg.Sm.Save(sess)
+	
+	tg.Call("sendMessage", map[string]interface{}{"chat_id": chatID, "text": "Running skill: <b>" + skill.Name + "</b>", "parse_mode": "HTML"})
+	go tg.Engine.Run(skill, sess)
+}
+
+func (tg *Telegram) showLastLogs(chatID int64, instanceID string, n int) {
+	state, _ := tg.Reg.Get(instanceID)
+	sess, _ := tg.Sm.Load(state.SessionID)
+	logs, _ := tg.Sm.GetLastAudit(sess, n)
+	
+	f := &HtmlFormatter{}
+	var buf strings.Builder
+	buf.WriteString("<b>Last entries:</b>\x0a")
+	for _, l := range logs {
+		buf.WriteString(fmt.Sprintf("[%s] %s: %s\x0a", l.Timestamp.Format("15:04"), l.Type, l.Content))
+	}
+	tg.Call("sendMessage", map[string]interface{}{"chat_id": chatID, "text": f.escape(buf.String()), "parse_mode": "HTML"})
+}
+
+func (tg *Telegram) showResumeMenu(chatID int64) {
+	sessions, _, _ := tg.Sm.List(0, 50)
+	cwds := make(map[string]bool)
+	var buttons [][]map[string]interface{}
+	
+	for _, s := range sessions {
+		if !cwds[s.CWD] {
+			cwds[s.CWD] = true
+			hash := fmt.Sprintf("%x", md5.Sum([]byte(s.CWD)))[:8]
+			buttons = append(buttons, []map[string]interface{}{
+				{"text": "📂 " + filepath.Base(s.CWD), "callback_data": "dir:" + hash},
+			})
+		}
+	}
+
+	tg.Call("sendMessage", map[string]interface{}{
+		"chat_id":      chatID,
+		"text":         "<i>Select Workspace:</i>",
+		"parse_mode":   "HTML",
+		"reply_markup": map[string]interface{}{"inline_keyboard": buttons},
+	})
 }
 
 func (tg *Telegram) HandleCallback(chatID int64, data string) {
 	instanceID := fmt.Sprintf("tg-%d", chatID)
 	
-	if strings.HasPrefix(data, "dir:") {
-		hash := data[4:]
-		sessions, _, _ := tg.Sm.List(0, 50)
-		var buttons [][]map[string]interface{}
-		
-		for _, s := range sessions {
-			h := fmt.Sprintf("%x", md5.Sum([]byte(s.CWD)))[:8]
-			if h == hash {
-				title := s.Title
-				if title == "" {
-					title = s.ID[:8]
-				}
-				buttons = append(buttons, []map[string]interface{}{
-					{"text": "📑 " + title, "callback_data": "res:" + s.ID},
-				})
-			}
-		}
-		tg.Call("sendMessage", map[string]interface{}{
-			"chat_id":      chatID,
-			"text":         "<i>Select Session:</i>",
-			"parse_mode":   "HTML",
-			"reply_markup": map[string]interface{}{"inline_keyboard": buttons},
-		})
-		return
-	}
-
-	if strings.HasPrefix(data, "res:") {
-		sessID := data[4:]
-		tg.Reg.Set(instanceID, sessID)
-		tg.Call("sendMessage", map[string]interface{}{
-			"chat_id":    chatID,
-			"text":       "✅ Focused on session <code>" + sessID + "</code>",
-			"parse_mode": "HTML",
-		})
-		return
-	}
-
-	if strings.HasPrefix(data, "intv:") {
-		parts := strings.Split(data, ":")
-		if len(parts) == 3 {
-			action := parts[1]
-			sessID := parts[2]
-			tg.Engine.ResolveIntervention(sessID, action)
-			tg.Call("sendMessage", map[string]interface{}{"chat_id": chatID, "text": "Action '" + action + "' dispatched."})
-		}
+	switch {
+	case strings.HasPrefix(data, "dir:"):
+		tg.showSessionsInDir(chatID, data[4:])
+	case strings.HasPrefix(data, "res:"):
+		tg.focusSession(chatID, instanceID, data[4:])
+	case strings.HasPrefix(data, "intv:"):
+		tg.resolveIntervention(chatID, data)
 	}
 }
 
+func (tg *Telegram) showSessionsInDir(chatID int64, hash string) {
+	sessions, _, _ := tg.Sm.List(0, 50)
+	var buttons [][]map[string]interface{}
+	
+	for _, s := range sessions {
+		h := fmt.Sprintf("%x", md5.Sum([]byte(s.CWD)))[:8]
+		if h == hash {
+			title := s.Title
+			if title == "" { title = s.ID[:8] }
+			buttons = append(buttons, []map[string]interface{}{
+				{"text": "📑 " + title, "callback_data": "res:" + s.ID},
+			})
+		}
+	}
+	tg.Call("sendMessage", map[string]interface{}{
+		"chat_id":      chatID,
+		"text":         "<i>Select Session:</i>",
+		"parse_mode":   "HTML",
+		"reply_markup": map[string]interface{}{"inline_keyboard": buttons},
+	})
+}
+
+func (tg *Telegram) focusSession(chatID int64, instanceID, sessID string) {
+	tg.Reg.Set(instanceID, sessID)
+	tg.Call("sendMessage", map[string]interface{}{
+		"chat_id":    chatID,
+		"text":       "✅ Focused on session <code>" + sessID + "</code>",
+		"parse_mode": "HTML",
+	})
+}
+
+func (tg *Telegram) resolveIntervention(chatID int64, data string) {
+	parts := strings.Split(data, ":")
+	if len(parts) == 3 {
+		tg.Engine.ResolveIntervention(parts[2], parts[1])
+		tg.Call("sendMessage", map[string]interface{}{"chat_id": chatID, "text": "Action '" + parts[1] + "' dispatched."})
+	}
+}
+
+// formatHTML is a legacy helper maintained for test compatibility.
 func formatHTML(s string) string {
-	// 1. Escape HTML special chars
-	s = strings.ReplaceAll(s, "&", "&amp;")
-	s = strings.ReplaceAll(s, "<", "&lt;")
-	s = strings.ReplaceAll(s, ">", "&gt;")
-
-	// 2. Bold: **text** -> <b>text</b>
-	for strings.Count(s, "**") >= 2 {
-		s = strings.Replace(s, "**", "<b>", 1)
-		s = strings.Replace(s, "**", "</b>", 1)
-	}
-
-	// 3. Code block: ```text``` -> <pre>text</pre>
-	for strings.Count(s, "```") >= 2 {
-		s = strings.Replace(s, "```", "<pre>", 1)
-		s = strings.Replace(s, "```", "</pre>", 1)
-	}
-
-	// 4. Inline Code: `text` -> <code>text</code>
-	for strings.Count(s, "`") >= 2 {
-		s = strings.Replace(s, "`", "<code>", 1)
-		s = strings.Replace(s, "`", "</code>", 1)
-	}
-
-	// 5. Italic: *text* -> <i>text</i>
-	for strings.Count(s, "*") >= 2 {
-		s = strings.Replace(s, "*", "<i>", 1)
-		s = strings.Replace(s, "*", "</i>", 1)
-	}
-
-	if len(s) > 3500 {
-		s = s[:3500] + "...[TRUNCATED]"
-	}
-	return s
+	f := &HtmlFormatter{}
+	return f.escape(s)
 }
