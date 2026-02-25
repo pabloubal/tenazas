@@ -6,6 +6,7 @@ import "time"
 type SkillGraph struct {
 	Name         string              `json:"skill_name"`
 	InitialState string              `json:"initial_state"`
+	MaxLoops     int                 `json:"max_loops"` // Skill-wide loop limit
 	States       map[string]StateDef `json:"states"`
 }
 
@@ -35,7 +36,9 @@ type Session struct {
 	ActiveNode  string            `json:"active_node"`
 	RoleCache   map[string]string `json:"role_cache"` // Maps "planner" -> "gemini-sid-1"
 	RetryCount  int               `json:"retry_count"`
-	Status      string            `json:"status"` // "running", "intervention_required", "completed", "failed", "idle"
+	LoopCount   int               `json:"loop_count"` // Global loop counter
+	Status      string            `json:"status"`     // "running", "intervention_required", "completed", "failed", "idle"
+	PendingFeedback string        `json:"pending_feedback,omitempty"` // Context for next prompt
 	Yolo        bool              `json:"yolo"`
 }
 

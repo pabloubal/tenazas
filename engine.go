@@ -12,24 +12,43 @@ import (
 type Engine struct {
 	sm         *SessionManager
 	exec       *Executor
+	maxLoops   int
 	intervs    map[string]chan string
 	intervsMux sync.RWMutex
+	running    sync.Map // sessionID -> bool
 }
 
-func NewEngine(sm *SessionManager, exec *Executor) *Engine {
+func NewEngine(sm *SessionManager, exec *Executor, maxLoops int) *Engine {
 	return &Engine{
-		sm:      sm,
-		exec:    exec,
-		intervs: make(map[string]chan string),
+		sm:       sm,
+		exec:     exec,
+		maxLoops: maxLoops,
+		intervs:  make(map[string]chan string),
+		running:  sync.Map{},
 	}
 }
 
+func (e *Engine) IsRunning(sessionID string) bool {
+	_, ok := e.running.Load(sessionID)
+	return ok
+}
+
 func (e *Engine) Run(skill *SkillGraph, sess *Session) {
+	if e.IsRunning(sess.ID) {
+		return
+	}
+	e.running.Store(sess.ID, true)
+	defer e.running.Delete(sess.ID)
+
 	if sess.ActiveNode == "" {
 		sess.ActiveNode = skill.InitialState
 		sess.Status = "running"
+		sess.LoopCount = 0
 		e.sm.Save(sess)
 		e.log(sess, "info", "engine", fmt.Sprintf("Started skill %s at node %s", skill.Name, sess.ActiveNode))
+	} else if sess.Status == "running" && sess.PendingFeedback == "" {
+		sess.PendingFeedback = "Session resumed. Please continue from where you left off."
+		e.sm.Save(sess)
 	}
 
 	for sess.Status == "running" || sess.Status == "intervention_required" {
@@ -49,7 +68,7 @@ func (e *Engine) Run(skill *SkillGraph, sess *Session) {
 		}
 
 		if sess.Status == "intervention_required" {
-			e.log(sess, "intervention", "engine", fmt.Sprintf("Waiting for intervention at state %s. Options: retry, fail_route, abort", sess.ActiveNode))
+			e.log(sess, "intervention", "engine", fmt.Sprintf("Waiting for intervention at state %s. Options: retry, proceed_to_fail, abort", sess.ActiveNode))
 			ch := e.getInterventionChan(sess.ID)
 			action := <-ch
 			
@@ -57,10 +76,17 @@ func (e *Engine) Run(skill *SkillGraph, sess *Session) {
 			case "retry":
 				sess.RetryCount = 0
 				sess.Status = "running"
-			case "fail_route":
+			case "proceed_to_fail":
 				sess.RetryCount = 0
+				sess.LoopCount = 0 // Reset loop count after intervention
 				sess.Status = "running"
-				sess.ActiveNode = state.OnFailRoute
+				
+				// Apply failure prompt as if we just failed
+				exitCode, output := 1, "User manually triggered fail route"
+				feedback := strings.ReplaceAll(state.OnFailPrompt, "{{exit_code}}", fmt.Sprintf("%d", exitCode))
+				feedback = strings.ReplaceAll(feedback, "{{stderr}}", output)
+				
+				e.transitionToFailRoute(skill, &state, sess, feedback)
 			case "abort":
 				sess.Status = "failed"
 			}
@@ -68,13 +94,13 @@ func (e *Engine) Run(skill *SkillGraph, sess *Session) {
 			if sess.Status != "running" {
 				continue
 			}
-			if action == "fail_route" {
-				continue // start next loop iteration with new node
+			if action == "proceed_to_fail" {
+				continue 
 			}
 		}
 
 		if state.Type == "action_loop" {
-			err := e.executeActionLoop(&state, sess)
+			err := e.executeActionLoop(skill, &state, sess)
 			if err != nil {
 				e.log(sess, "info", "engine", "Action loop error: "+err.Error())
 				sess.Status = "failed"
@@ -92,23 +118,41 @@ func (e *Engine) Run(skill *SkillGraph, sess *Session) {
 	}
 }
 
-func (e *Engine) executeActionLoop(state *StateDef, sess *Session) error {
+func (e *Engine) executeActionLoop(skill *SkillGraph, state *StateDef, sess *Session) error {
 	// 1. Pre-Action
 	if state.PreActionCmd != "" && sess.RetryCount == 0 {
 		e.log(sess, "info", "engine", "Running pre_action_cmd: "+state.PreActionCmd)
 		exitCode, output := e.runShell(state.PreActionCmd, sess.CWD)
 		if exitCode != 0 {
 			e.log(sess, "cmd_result", "engine", fmt.Sprintf("pre_action_cmd failed (Exit: %d): %s", exitCode, output))
-			// Immediately jump to fail route
-			sess.ActiveNode = state.OnFailRoute
-			e.sm.Save(sess)
+			// Technical failure -> Retry this node
+			sess.RetryCount++
+			sess.PendingFeedback = fmt.Sprintf("Pre-action command failed (Exit %d):\n%s", exitCode, output)
+			if sess.RetryCount >= state.MaxRetries && state.MaxRetries > 0 {
+				sess.Status = "intervention_required"
+			}
 			return nil
 		}
 	}
 
 	// 2. LLM Execution
 	geminiSID := sess.RoleCache[state.SessionRole]
-	prompt := e.resolveInstruction(state.Instruction, sess.CWD)
+	instruction := e.resolveInstruction(state.Instruction, sess.CWD)
+	
+	var prompt string
+	if sess.PendingFeedback == "Session resumed. Please continue from where you left off." && geminiSID != "" {
+		// Just a nudge for continuity since the LLM already has the instruction in history
+		prompt = sess.PendingFeedback
+		sess.PendingFeedback = "" 
+	} else if sess.PendingFeedback != "" {
+		// Logical failure or technical retry -> Send full context + feedback
+		prompt = fmt.Sprintf("%s\n\n### FEEDBACK FROM PREVIOUS ATTEMPT:\n%s", instruction, sess.PendingFeedback)
+		sess.PendingFeedback = ""
+	} else {
+		// Fresh start for this node
+		prompt = instruction
+	}
+	
 	e.log(sess, "info", "engine", fmt.Sprintf("Executing LLM (%s) with approval mode: %s", state.SessionRole, state.ApprovalMode))
 	e.log(sess, "llm_prompt", state.SessionRole, prompt)
 
@@ -129,7 +173,14 @@ func (e *Engine) executeActionLoop(state *StateDef, sess *Session) error {
 	})
 
 	if err != nil {
-		return err
+		// Execution error -> Retry this node
+		sess.RetryCount++
+		sess.PendingFeedback = "Gemini execution error: " + err.Error()
+		if sess.RetryCount >= state.MaxRetries && state.MaxRetries > 0 {
+			sess.Status = "intervention_required"
+		}
+		e.sm.Save(sess)
+		return nil // We don't return err to avoid failing the whole engine loop
 	}
 	e.log(sess, "llm_response", state.SessionRole, response)
 
@@ -145,20 +196,28 @@ func (e *Engine) executeActionLoop(state *StateDef, sess *Session) error {
 				e.runShell(state.PostActionCmd, sess.CWD)
 			}
 			sess.RetryCount = 0
+			sess.LoopCount = 0
+			sess.PendingFeedback = ""
 			sess.ActiveNode = state.Next
 			e.sm.Save(sess)
 			return nil
 		}
 
-		// Failure
-		sess.RetryCount++
-		if sess.RetryCount >= state.MaxRetries {
+		// Failure (Verification) -> Always follows OnFailRoute (Logical Cycle)
+		maxLoops := e.maxLoops
+		if skill.MaxLoops > 0 {
+			maxLoops = skill.MaxLoops
+		}
+
+		sess.LoopCount++
+		feedback := strings.ReplaceAll(state.OnFailPrompt, "{{exit_code}}", fmt.Sprintf("%d", exitCode))
+		feedback = strings.ReplaceAll(feedback, "{{stderr}}", output)
+		
+		if sess.LoopCount >= maxLoops {
+			sess.PendingFeedback = feedback
 			sess.Status = "intervention_required"
 		} else {
-			// Format feedback
-			feedback := strings.ReplaceAll(state.OnFailPrompt, "{{exit_code}}", fmt.Sprintf("%d", exitCode))
-			feedback = strings.ReplaceAll(feedback, "{{stderr}}", output)
-			state.Instruction = feedback
+			e.transitionToFailRoute(skill, state, sess, feedback)
 		}
 		e.sm.Save(sess)
 		return nil
@@ -169,9 +228,25 @@ func (e *Engine) executeActionLoop(state *StateDef, sess *Session) error {
 		e.runShell(state.PostActionCmd, sess.CWD)
 	}
 	sess.RetryCount = 0
+	sess.LoopCount = 0
 	sess.ActiveNode = state.Next
 	e.sm.Save(sess)
 	return nil
+}
+
+func (e *Engine) transitionToFailRoute(skill *SkillGraph, state *StateDef, sess *Session, feedback string) {
+	if state.OnFailRoute == "" {
+		sess.Status = "failed"
+		e.log(sess, "info", "engine", "No on_fail_route defined for state "+sess.ActiveNode)
+		return
+	}
+
+	e.log(sess, "info", "engine", fmt.Sprintf("Transitioning to fail route: %s (Loop: %d)", state.OnFailRoute, sess.LoopCount))
+	
+	// Store feedback so the next node receives it in its prompt
+	sess.PendingFeedback = feedback
+	sess.ActiveNode = state.OnFailRoute
+	sess.RetryCount = 0
 }
 
 func (e *Engine) executeTool(state *StateDef, sess *Session) {
@@ -182,6 +257,32 @@ func (e *Engine) executeTool(state *StateDef, sess *Session) {
 	sess.RetryCount = 0
 	sess.ActiveNode = state.Next
 	e.sm.Save(sess)
+}
+
+func (e *Engine) ExecutePrompt(sess *Session, prompt string) {
+	e.log(sess, "llm_prompt", "user", prompt)
+
+	// Use 'default' role for raw prompts
+	geminiSID := sess.RoleCache["default"]
+
+	_, err := e.exec.Run(geminiSID, prompt, sess.CWD, "", sess.Yolo, func(chunk string) {
+		GlobalBus.Publish(Event{
+			Type:      EventAudit,
+			SessionID: sess.ID,
+			Payload: AuditEntry{
+				Type:    "llm_response_chunk",
+				Source:  "gemini",
+				Content: chunk,
+			},
+		})
+	}, func(newSID string) {
+		sess.RoleCache["default"] = newSID
+		e.sm.Save(sess)
+	})
+
+	if err != nil {
+		e.log(sess, "info", "engine", "LLM Error: "+err.Error())
+	}
 }
 
 func (e *Engine) resolveInstruction(instr, cwd string) string {
@@ -201,7 +302,17 @@ func (e *Engine) resolveInstruction(instr, cwd string) string {
 			return "Error: Could not load instruction file " + filename
 		}
 	}
-	return string(data)
+
+	content := string(data)
+	// Strip YAML frontmatter if present (lines between the first two ---)
+	if strings.HasPrefix(content, "---") {
+		parts := strings.SplitN(content, "---", 3)
+		if len(parts) == 3 {
+			content = strings.TrimSpace(parts[2])
+		}
+	}
+
+	return content
 }
 
 func (e *Engine) runShell(cmdStr, cwd string) (int, string) {

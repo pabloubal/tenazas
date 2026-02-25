@@ -46,13 +46,15 @@ func (c *CLI) Run(resume bool) error {
 	fmt.Printf("Connected to session %s (Path: %s)\x0a", sess.ID, sess.CWD)
 	fmt.Println("Commands: /run <skill>, /last <N>, /intervene <action>")
 
-	// If session has a skill but is stopped, auto-resume it
-	if sess.SkillName != "" && (sess.Status == "failed" || sess.Status == "idle") {
+	// If session has a skill, ensure it's running
+	if sess.SkillName != "" {
 		skill, err := LoadSkill(c.Sm.StoragePath, sess.SkillName)
 		if err == nil {
-			fmt.Printf("Auto-resuming skill: %s\x0a", sess.SkillName)
-			sess.Status = "running"
-			c.Sm.Save(sess)
+			if sess.Status != "running" && sess.Status != "intervention_required" {
+				fmt.Printf("Resuming task: %s (Skill: %s)\x0a", sess.ID, sess.SkillName)
+				sess.Status = "running"
+				c.Sm.Save(sess)
+			}
 			go c.Engine.Run(skill, sess)
 		}
 	}
@@ -86,7 +88,7 @@ func (c *CLI) Run(resume bool) error {
 					fmt.Printf("\x0a\x1b[%s;1m%s COMMAND RESULT:\x1b[0m\x0a\x1b[90m%s\x1b[0m\x0a", color, icon, audit.Content)
 				case "intervention":
 					fmt.Printf("\x0a\x1b[31;1m⚠️ INTERVENTION REQUIRED:\x1b[0m\x0a%s\x0a", audit.Content)
-					fmt.Print("\x0aType `/intervene <retry|fail_route|abort>`\x0a> ")
+					fmt.Print("\x0aType `/intervene <retry|proceed_to_fail|abort>`\x0a> ")
 				default:
 					fmt.Printf("\x0a[%s] %s\x0a", audit.Type, audit.Content)
 				}
@@ -134,12 +136,8 @@ func (c *CLI) Run(resume bool) error {
 			continue
 		}
 
-		// Default: log user input
-		c.Sm.AppendAudit(sess, AuditEntry{
-			Type:    "user_input",
-			Source:  "cli",
-			Content: text,
-		})
+		// Default: Execute raw prompt
+		go c.Engine.ExecutePrompt(sess, text)
 	}
 
 	return nil

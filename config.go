@@ -12,6 +12,7 @@ import (
 const (
 	DefaultTgInterval = 500 // ms
 	DefaultPageSize   = 5
+	DefaultMaxLoops   = 5
 	DefaultStorageDir = ".tenazas"
 	ConfigFileName    = "config.json"
 )
@@ -22,6 +23,7 @@ type Config struct {
 	AllowedUserIDs []int64 `json:"allowed_user_ids"`
 	UpdateInterval int     `json:"update_interval"`
 	GeminiBinPath  string  `json:"gemini_bin_path"`
+	MaxLoops       int     `json:"max_loops"`
 }
 
 func getDefaultStoragePath() string {
@@ -34,6 +36,7 @@ func loadConfig() (*Config, error) {
 		StorageDir:     getDefaultStoragePath(),
 		UpdateInterval: DefaultTgInterval,
 		GeminiBinPath:  "gemini",
+		MaxLoops:       DefaultMaxLoops,
 	}
 
 	cfgPath := filepath.Join(cfg.StorageDir, ConfigFileName)
@@ -54,6 +57,11 @@ func loadConfig() (*Config, error) {
 	}
 	if envDir := os.Getenv("TENAZAS_STORAGE_DIR"); envDir != "" {
 		cfg.StorageDir = envDir
+	}
+	if envLoops := os.Getenv("TENAZAS_MAX_LOOPS"); envLoops != "" {
+		if l, err := strconv.Atoi(envLoops); err == nil {
+			cfg.MaxLoops = l
+		}
 	}
 
 	os.MkdirAll(cfg.StorageDir, 0755)

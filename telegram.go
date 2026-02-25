@@ -225,7 +225,7 @@ func (tg *Telegram) broadcastAudit(sessionID string, audit AuditEntry) {
 					"inline_keyboard": [][]map[string]interface{}{
 						{
 							{"text": "🔄 Retry", "callback_data": "intv:retry:" + sessionID},
-							{"text": "⏩ Fail Route", "callback_data": "intv:fail_route:" + sessionID},
+							{"text": "⏩ Proceed to Fail", "callback_data": "intv:proceed_to_fail:" + sessionID},
 						},
 						{
 							{"text": "🛑 Abort", "callback_data": "intv:abort:" + sessionID},
@@ -347,13 +347,9 @@ func (tg *Telegram) HandleMessage(chatID int64, text string) {
 		return
 	}
 
-	// Just a raw message, treat as info/prompt context injection
+	// Just a raw message, trigger LLM
 	sess, _ := tg.Sm.Load(state.SessionID)
-	tg.Sm.AppendAudit(sess, AuditEntry{
-		Type:    "user_input",
-		Source:  "telegram",
-		Content: text,
-	})
+	go tg.Engine.ExecutePrompt(sess, text)
 }
 
 func (tg *Telegram) HandleCallback(chatID int64, data string) {

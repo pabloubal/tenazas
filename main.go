@@ -25,7 +25,7 @@ func main() {
 	}
 
 	exec := NewExecutor(cfg.GeminiBinPath, cfg.StorageDir)
-	engine := NewEngine(sm, exec)
+	engine := NewEngine(sm, exec, cfg.MaxLoops)
 
 	// Start Telegram
 	var tg *Telegram
@@ -61,8 +61,9 @@ func main() {
 				if (s.Status == "running" || s.Status == "intervention_required") && s.SkillName != "" {
 					skill, err := LoadSkill(cfg.StorageDir, s.SkillName)
 					if err == nil {
-						fmt.Printf("Resuming task: %s (Skill: %s)\x0a", s.ID, s.SkillName)
-						go engine.Run(skill, &s)
+						localSess := s // Create local copy
+						fmt.Printf("Resuming task: %s (Skill: %s)\x0a", localSess.ID, localSess.SkillName)
+						go engine.Run(skill, &localSess)
 					}
 				}
 			}

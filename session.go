@@ -73,13 +73,20 @@ func (sm *SessionManager) List(page, pageSize int) ([]Session, int, error) {
 		if !wd.IsDir() {
 			continue
 		}
-		files, _ := os.ReadDir(filepath.Join(dir, wd.Name()))
+		subdir := filepath.Join(dir, wd.Name())
+		files, _ := os.ReadDir(subdir)
 		for _, f := range files {
 			if strings.HasSuffix(f.Name(), ".meta.json") {
-				id := f.Name()[:len(f.Name())-len(".meta.json")]
-				s, err := sm.Load(id)
+				fPath := filepath.Join(subdir, f.Name())
+				data, err := os.ReadFile(fPath)
 				if err == nil {
-					sessions = append(sessions, *s)
+					var s Session
+					if err := json.Unmarshal(data, &s); err == nil {
+						if s.RoleCache == nil {
+							s.RoleCache = make(map[string]string)
+						}
+						sessions = append(sessions, s)
+					}
 				}
 			}
 		}
