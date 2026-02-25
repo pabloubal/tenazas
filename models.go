@@ -18,6 +18,7 @@ const (
 // Skill Definition (SKILL.json)
 type SkillGraph struct {
 	Name         string              `json:"skill_name"`
+	BaseDir      string              `json:"base_dir,omitempty"` // Local directory for assets
 	InitialState string              `json:"initial_state"`
 	MaxLoops     int                 `json:"max_loops"` // Skill-wide loop limit
 	States       map[string]StateDef `json:"states"`

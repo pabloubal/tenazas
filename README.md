@@ -4,6 +4,10 @@
 
 ## Features
 
+- **Autonomous Skill System**: Multi-state action loops that allow Gemini to perform complex, iterative tasks like TDD, refactoring, and code review.
+- **TDD Feature Development**: A specialized skill (`tdd_feature_dev`) that enforces Red-Green-Refactor cycles with automated test verification.
+- **High-Fidelity Log Capturing**: Captures up to 32KB of verification output (preserving the beginning for compilation errors and the end for assertion failures), ensuring Gemini has the full context to fix bugs.
+- **Isolated Skill Architecture**: Skills are self-contained directories with their own instructions, scripts, and assets, making them easy to share and version.
 - **Decoupled Architecture**: Run the Telegram server and the CLI REPL independently.
 - **Image Support**: Send photos from Telegram for full multimodal analysis (via `gemini`'s `read_file` tool).
 - **Session-Local Storage**: Each session creates a `.tenazas` directory in its local workspace (`CWD`) for images and temporary data.
@@ -61,6 +65,26 @@ Tenazas now uses a subcommand structure to separate the local interface from the
 - **Switch/Resume**: Send `/resume` to see a list of sessions and pick one.
 - **YOLO Mode**: Send `/yolo` to toggle auto-approve mode for the current session.
 - **Status**: The bot streams responses in real-time, buffering updates to respect Telegram's rate limits.
+
+## Skill System
+
+Tenazas includes an autonomous engine that can execute complex "Skills" defined as state graphs.
+
+### CLI Commands
+- `/skills`: List all available skills and their status.
+- `/skills toggle <name>`: Enable or disable a specific skill.
+- `/run <skill>`: Start a skill execution in the current session.
+- `/intervene <retry|proceed_to_fail|abort>`: Manually resolve a state that requires human intervention.
+
+### Autonomous TDD Workflow
+The `tdd_feature_dev` skill follows a strict engineering lifecycle:
+1.  **Plan**: Gemini reads the issue and writes a technical plan to `plan.md`.
+2.  **Red Phase**: Gemini writes unit tests. Verification fails if the tests *pass* or fail to compile.
+3.  **Green Phase**: Gemini writes the minimal implementation to make tests pass.
+4.  **Refactor**: Gemini cleans up the code without breaking the tests.
+5.  **Review**: A separate reviewer role inspects the code and provides feedback.
+
+Tenazas ensures continuity by passing the full output (logs) of each phase to the next role, allowing the "Coder" to see exactly why the "Tester's" tests failed.
 
 ## How it Works
 

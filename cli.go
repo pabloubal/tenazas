@@ -130,9 +130,46 @@ func (c *CLI) repl(sess *Session) error {
 			if len(parts) > 1 {
 				c.Engine.ResolveIntervention(sess.ID, parts[1])
 			}
+		case "/skills":
+			c.handleSkills(parts[1:])
 		default:
 			go c.Engine.ExecutePrompt(sess, text)
 		}
+	}
+}
+
+func (c *CLI) handleSkills(args []string) {
+	c.Sm.RefreshSkillRegistry()
+	if len(args) >= 2 && args[0] == "toggle" {
+		name := args[1]
+		active, _ := c.Sm.GetActiveSkills()
+		enabled := false
+		for _, s := range active {
+			if s == name {
+				enabled = true
+				break
+			}
+		}
+		c.Sm.ToggleSkill(name, !enabled)
+		return
+	}
+
+	// List skills
+	all, _ := ListSkills(c.Sm.StoragePath)
+	active, _ := c.Sm.GetActiveSkills()
+
+	activeMap := make(map[string]bool)
+	for _, s := range active {
+		activeMap[s] = true
+	}
+
+	fmt.Fprintln(c.Out, "STATUS  NAME")
+	for _, s := range all {
+		status := "[ ]"
+		if activeMap[s] {
+			status = "[X]"
+		}
+		fmt.Fprintf(c.Out, "%-7s %s\x0a", status, s)
 	}
 }
 

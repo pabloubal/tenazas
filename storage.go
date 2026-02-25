@@ -79,7 +79,55 @@ func (s *Storage) resolvePath(dirs []string, filename string) string {
 
 // ResolveSkillPath finds a skill file in storage or local project.
 func (s *Storage) ResolveSkillPath(name string) string {
-	return s.resolvePath([]string{filepath.Join(s.BaseDir, "skills"), "skills"}, name+".json")
+	dirs := []string{
+		filepath.Join(s.BaseDir, "skills", name),
+		filepath.Join("skills", name),
+	}
+	for _, dir := range dirs {
+		path := filepath.Join(dir, "skill.json")
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+	return ""
+}
+
+// ResolveInstruction resolves an instruction content. If it starts with @, it reads from a file.
+func (s *Storage) ResolveInstruction(path string, skillBaseDir string) (string, error) {
+	fullPath, err := s.ResolvePath(path, skillBaseDir)
+	if err != nil {
+		return path, err
+	}
+	if fullPath == path {
+		return path, nil
+	}
+
+	data, err := os.ReadFile(fullPath)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// ResolvePath resolves an asset path relative to the skill directory.
+func (s *Storage) ResolvePath(path string, skillBaseDir string) (string, error) {
+	if !strings.HasPrefix(path, "@") {
+		return path, nil
+	}
+
+	filename := strings.TrimPrefix(path, "@")
+	if filepath.IsAbs(filename) {
+		return "", os.ErrPermission
+	}
+	fullPath := filepath.Join(skillBaseDir, filename)
+
+	// Security: Prevent path traversal
+	rel, err := filepath.Rel(skillBaseDir, fullPath)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return "", os.ErrPermission
+	}
+
+	return fullPath, nil
 }
 
 // ResolveInstructionPath finds an instruction file in storage or session CWD.

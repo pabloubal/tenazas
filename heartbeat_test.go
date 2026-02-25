@@ -36,8 +36,10 @@ echo '{"type": "message", "content": "hb done"}'
 			"end": {Type: "end"},
 		},
 	}
+	skillDir := filepath.Join(skillsDir, "hb-skill")
+	os.MkdirAll(skillDir, 0755)
 	skillData, _ := json.Marshal(skill)
-	os.WriteFile(filepath.Join(skillsDir, "hb-skill.json"), skillData, 0644)
+	os.WriteFile(filepath.Join(skillDir, "skill.json"), skillData, 0644)
 
 	hb := Heartbeat{
 		Name:  "Test HB",

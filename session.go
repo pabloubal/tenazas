@@ -183,3 +183,49 @@ func (sm *SessionManager) GetLastAudit(s *Session, n int) ([]AuditEntry, error) 
 	}
 	return all[len(all)-n:], nil
 }
+
+func (sm *SessionManager) RefreshSkillRegistry() error {
+	skills, err := ListSkills(sm.StoragePath)
+	if err != nil {
+		return err
+	}
+
+	registry := make(map[string]bool)
+	_ = sm.storage.ReadJSON("skills_registry.json", &registry)
+
+	changed := false
+	for _, s := range skills {
+		if _, ok := registry[s]; !ok {
+			registry[s] = true
+			changed = true
+		}
+	}
+
+	if changed {
+		return sm.storage.WriteJSON("skills_registry.json", registry)
+	}
+	return nil
+}
+
+func (sm *SessionManager) GetActiveSkills() ([]string, error) {
+	registry := make(map[string]bool)
+	_ = sm.storage.ReadJSON("skills_registry.json", &registry)
+
+	// Also ensure we have all skills from disk
+	skills, _ := ListSkills(sm.StoragePath)
+	var active []string
+	for _, s := range skills {
+		enabled, ok := registry[s]
+		if !ok || enabled {
+			active = append(active, s)
+		}
+	}
+	return active, nil
+}
+
+func (sm *SessionManager) ToggleSkill(name string, enabled bool) error {
+	registry := make(map[string]bool)
+	_ = sm.storage.ReadJSON("skills_registry.json", &registry)
+	registry[name] = enabled
+	return sm.storage.WriteJSON("skills_registry.json", registry)
+}

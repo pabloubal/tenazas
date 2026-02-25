@@ -2,11 +2,26 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 func (sm *SessionManager) LoadSkill(skillName string) (*SkillGraph, error) {
+	// Check if skill is enabled
+	active, _ := sm.GetActiveSkills()
+	found := false
+	for _, s := range active {
+		if s == skillName {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, fmt.Errorf("skill %s is disabled", skillName)
+	}
+
 	path := sm.storage.ResolveSkillPath(skillName)
 	if path == "" {
 		return nil, os.ErrNotExist
@@ -21,7 +36,49 @@ func (sm *SessionManager) LoadSkill(skillName string) (*SkillGraph, error) {
 	if err := json.Unmarshal(data, &skill); err != nil {
 		return nil, err
 	}
+
+	skill.BaseDir = filepath.Dir(path)
+
+	// Resolve instructions and commands
+	for name, state := range skill.States {
+		if strings.HasPrefix(state.Instruction, "@") {
+			resolved, err := sm.storage.ResolveInstruction(state.Instruction, skill.BaseDir)
+			if err != nil {
+				return nil, err
+			}
+			state.Instruction = resolved
+		}
+		if strings.HasPrefix(state.PreActionCmd, "@") {
+			resolved, err := sm.storage.ResolvePath(state.PreActionCmd, skill.BaseDir)
+			if err != nil {
+				return nil, err
+			}
+			state.PreActionCmd = resolved
+		}
+		if strings.HasPrefix(state.VerifyCmd, "@") {
+			resolved, err := sm.storage.ResolvePath(state.VerifyCmd, skill.BaseDir)
+			if err != nil {
+				return nil, err
+			}
+			state.VerifyCmd = resolved
+		}
+		if strings.HasPrefix(state.PostActionCmd, "@") {
+			resolved, err := sm.storage.ResolvePath(state.PostActionCmd, skill.BaseDir)
+			if err != nil {
+				return nil, err
+			}
+			state.PostActionCmd = resolved
+		}
+		skill.States[name] = state
+	}
+
 	return &skill, nil
+}
+
+// ResolveInstruction is a global helper for asset resolution
+func ResolveInstruction(path, skillBaseDir, sessionCWD string) (string, error) {
+	s := &Storage{}
+	return s.ResolveInstruction(path, skillBaseDir)
 }
 
 // Maintaining the global LoadSkill for compatibility, but it should ideally use SessionManager
@@ -47,16 +104,18 @@ func ListSkills(storageDir string) ([]string, error) {
 
 	seen := make(map[string]bool)
 	for _, dir := range dirs {
-		files, err := os.ReadDir(dir)
+		entries, err := os.ReadDir(dir)
 		if err != nil {
 			continue
 		}
-		for _, f := range files {
-			if filepath.Ext(f.Name()) == ".json" {
-				name := f.Name()[:len(f.Name())-5]
-				if !seen[name] {
-					skills = append(skills, name)
-					seen[name] = true
+		for _, e := range entries {
+			if e.IsDir() {
+				skillJSON := filepath.Join(dir, e.Name(), "skill.json")
+				if _, err := os.Stat(skillJSON); err == nil {
+					if !seen[e.Name()] {
+						skills = append(skills, e.Name())
+						seen[e.Name()] = true
+					}
 				}
 			}
 		}

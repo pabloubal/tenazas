@@ -118,8 +118,8 @@ func (e *Engine) executeActionLoop(skill *SkillGraph, state *StateDef, sess *Ses
 	// Pre-Action
 	if state.PreActionCmd != "" && sess.RetryCount == 0 {
 		if exitCode, output := e.runShell(state.PreActionCmd, sess.CWD); exitCode != 0 {
-			e.log(sess, AuditCmdResult, "engine", fmt.Sprintf("pre_action_cmd failed (Exit %d): %s", exitCode, output))
-			e.handleRetry(state, sess, fmt.Sprintf("Pre-action command failed (Exit %d):\n%s", exitCode, output))
+			e.log(sess, AuditCmdResult, "engine", fmt.Sprintf("pre_action_cmd failed (Exit Code: %d): %s", exitCode, output))
+			e.handleRetry(state, sess, fmt.Sprintf("Pre-action command failed (Exit Code: %d):\n%s", exitCode, output))
 			return nil
 		}
 	}
@@ -130,19 +130,20 @@ func (e *Engine) executeActionLoop(skill *SkillGraph, state *StateDef, sess *Ses
 		e.handleRetry(state, sess, "Gemini execution error: "+err.Error())
 		return nil
 	}
+	sess.PendingFeedback = "" // Clear feedback only after successful LLM consumption
 	e.log(sess, AuditLLMResponse, state.SessionRole, response)
 
 	// Post-Action / Verification
 	if state.VerifyCmd == "" {
-		e.completeState(state, sess)
+		e.completeState(state, sess, "")
 		return nil
 	}
 
 	exitCode, output := e.runShell(state.VerifyCmd, sess.CWD)
-	e.log(sess, AuditCmdResult, "engine", fmt.Sprintf("Verification Result (Exit %d):\x0a%s", exitCode, output))
+	e.log(sess, AuditCmdResult, "engine", fmt.Sprintf("Verification Result (Exit Code: %d):\x0a%s", exitCode, output))
 
 	if exitCode == 0 {
-		e.completeState(state, sess)
+		e.completeState(state, sess, output)
 	} else {
 		e.handleLoopFailure(skill, state, sess, exitCode, output)
 	}
@@ -159,7 +160,12 @@ func (e *Engine) callLLM(state *StateDef, sess *Session) (string, error) {
 
 func (e *Engine) handleRetry(state *StateDef, sess *Session, feedback string) {
 	sess.RetryCount++
-	sess.PendingFeedback = feedback
+	if sess.PendingFeedback != "" && !strings.Contains(sess.PendingFeedback, feedback) {
+		sess.PendingFeedback = sess.PendingFeedback + "\n\nAdditional Error: " + feedback
+	} else {
+		sess.PendingFeedback = feedback
+	}
+
 	if state.MaxRetries > 0 && sess.RetryCount >= state.MaxRetries {
 		sess.Status = StatusIntervention
 	}
@@ -170,6 +176,8 @@ func (e *Engine) handleLoopFailure(skill *SkillGraph, state *StateDef, sess *Ses
 	sess.LoopCount++
 	feedback := strings.ReplaceAll(state.OnFailPrompt, "{{exit_code}}", fmt.Sprintf("%d", exitCode))
 	feedback = strings.ReplaceAll(feedback, "{{stderr}}", output)
+	feedback = strings.ReplaceAll(feedback, "{{stdout}}", output)
+	feedback = strings.ReplaceAll(feedback, "{{output}}", output)
 	
 	limit := e.maxLoops
 	if skill.MaxLoops > 0 {
@@ -196,13 +204,13 @@ func (e *Engine) transitionToFailRoute(skill *SkillGraph, state *StateDef, sess 
 	sess.RetryCount = 0
 }
 
-func (e *Engine) completeState(state *StateDef, sess *Session) {
+func (e *Engine) completeState(state *StateDef, sess *Session, output string) {
 	if state.PostActionCmd != "" {
 		e.runShell(state.PostActionCmd, sess.CWD)
 	}
 	sess.RetryCount = 0
 	sess.LoopCount = 0
-	sess.PendingFeedback = ""
+	sess.PendingFeedback = output // Preserve output as feedback for next state
 	sess.ActiveNode = state.Next
 	e.sm.Save(sess)
 }
@@ -215,14 +223,10 @@ func (e *Engine) buildPrompt(state *StateDef, sess *Session) string {
 	
 	// Handle special resume feedback
 	if sess.PendingFeedback == "Session resumed. Please continue from where you left off." {
-		f := sess.PendingFeedback
-		sess.PendingFeedback = ""
-		return f
+		return sess.PendingFeedback
 	}
 
-	f := fmt.Sprintf("%s\x0a\x0a### FEEDBACK FROM PREVIOUS ATTEMPT:\x0a%s", instruction, sess.PendingFeedback)
-	sess.PendingFeedback = ""
-	return f
+	return fmt.Sprintf("%s\x0a\x0a### FEEDBACK FROM PREVIOUS ATTEMPT:\x0a%s", instruction, sess.PendingFeedback)
 }
 
 func (e *Engine) onChunk(sess *Session, state *StateDef) func(string) {
@@ -244,6 +248,7 @@ func (e *Engine) executeTool(state *StateDef, sess *Session) {
 	e.log(sess, AuditCmdResult, "engine", fmt.Sprintf("Exit Code: %d\x0aOutput: %s", exitCode, out))
 	
 	sess.RetryCount = 0
+	sess.PendingFeedback = out
 	sess.ActiveNode = state.Next
 	e.sm.Save(sess)
 }
@@ -306,8 +311,10 @@ func (e *Engine) runShell(cmdStr, cwd string) (int, string) {
 	}
 
 	strOut := string(out)
-	if len(strOut) > 4000 {
-		strOut = "...[TRUNCATED]...\x0a" + strOut[len(strOut)-3900:]
+	const maxLen = 32000
+	if len(strOut) > maxLen {
+		// Keep a bit of the beginning and the end
+		strOut = strOut[:1000] + "\x0a...[TRUNCATED]...\x0a" + strOut[len(strOut)-(maxLen-1100):]
 	}
 	return exitCode, strOut
 }

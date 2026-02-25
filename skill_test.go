@@ -14,6 +14,10 @@ func TestSkillLoading(t *testing.T) {
 	skillsDir := filepath.Join(tmpDir, "skills")
 	os.MkdirAll(skillsDir, 0755)
 
+	// Valid isolated skill: skills/unique-test-skill/skill.json
+	skillDir := filepath.Join(skillsDir, "unique-test-skill")
+	os.MkdirAll(skillDir, 0755)
+
 	skill := SkillGraph{
 		Name: "unique-test-skill",
 		States: map[string]StateDef{
@@ -21,7 +25,7 @@ func TestSkillLoading(t *testing.T) {
 		},
 	}
 	data, _ := json.Marshal(skill)
-	os.WriteFile(filepath.Join(skillsDir, "unique-test-skill.json"), data, 0644)
+	os.WriteFile(filepath.Join(skillDir, "skill.json"), data, 0644)
 
 	// Test LoadSkill
 	loaded, err := LoadSkill(tmpDir, "unique-test-skill")
