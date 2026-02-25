@@ -32,8 +32,13 @@ func getDefaultStoragePath() string {
 }
 
 func loadConfig() (*Config, error) {
+	storageDir := os.Getenv("TENAZAS_STORAGE_DIR")
+	if storageDir == "" {
+		storageDir = getDefaultStoragePath()
+	}
+
 	cfg := &Config{
-		StorageDir:     getDefaultStoragePath(),
+		StorageDir:     storageDir,
 		UpdateInterval: DefaultTgInterval,
 		GeminiBinPath:  "gemini",
 		MaxLoops:       DefaultMaxLoops,
@@ -48,6 +53,7 @@ func loadConfig() (*Config, error) {
 		cfg.TelegramToken = envToken
 	}
 	if envIDs := os.Getenv("TENAZAS_ALLOWED_IDS"); envIDs != "" {
+		cfg.AllowedUserIDs = nil // Clear if provided by ENV to override file
 		ids := strings.Split(envIDs, ",")
 		for _, idStr := range ids {
 			if id, err := strconv.ParseInt(strings.TrimSpace(idStr), 10, 64); err == nil {

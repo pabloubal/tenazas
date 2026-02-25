@@ -266,14 +266,16 @@ func (e *Engine) ExecutePrompt(sess *Session, prompt string) {
 	geminiSID := sess.RoleCache["default"]
 
 	_, err := e.exec.Run(geminiSID, prompt, sess.CWD, "", sess.Yolo, func(chunk string) {
+		entry := AuditEntry{
+			Type:    "llm_response_chunk",
+			Source:  "gemini",
+			Content: chunk,
+		}
+		e.sm.AppendAudit(sess, entry)
 		GlobalBus.Publish(Event{
 			Type:      EventAudit,
 			SessionID: sess.ID,
-			Payload: AuditEntry{
-				Type:    "llm_response_chunk",
-				Source:  "gemini",
-				Content: chunk,
-			},
+			Payload:   entry,
 		})
 	}, func(newSID string) {
 		sess.RoleCache["default"] = newSID

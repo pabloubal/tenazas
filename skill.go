@@ -32,9 +32,17 @@ func ListSkills(storageDir string) ([]string, error) {
 	
 	dirs := []string{
 		filepath.Join(storageDir, "skills"),
-		"skills",
 	}
 
+	// Only add local skills if storageDir is not the current working directory
+	cwd, _ := os.Getwd()
+	if absStorage, err := filepath.Abs(storageDir); err == nil {
+		if absCwd, err := filepath.Abs(cwd); err == nil && absStorage != absCwd {
+			dirs = append(dirs, filepath.Join(absCwd, "skills"))
+		}
+	}
+
+	seen := make(map[string]bool)
 	for _, dir := range dirs {
 		files, err := os.ReadDir(dir)
 		if err != nil {
@@ -42,7 +50,11 @@ func ListSkills(storageDir string) ([]string, error) {
 		}
 		for _, f := range files {
 			if filepath.Ext(f.Name()) == ".json" {
-				skills = append(skills, f.Name()[:len(f.Name())-5])
+				name := f.Name()[:len(f.Name())-5]
+				if !seen[name] {
+					skills = append(skills, name)
+					seen[name] = true
+				}
 			}
 		}
 	}
