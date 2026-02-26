@@ -94,11 +94,14 @@ func ListSkills(storageDir string) ([]string, error) {
 		filepath.Join(storageDir, "skills"),
 	}
 
-	// Only add local skills if storageDir is not the current working directory
+	// Only add local skills if storageDir is the default storage path
+	// This ensures isolation in tests using temporary storage directories.
 	cwd, _ := os.Getwd()
 	if absStorage, err := filepath.Abs(storageDir); err == nil {
-		if absCwd, err := filepath.Abs(cwd); err == nil && absStorage != absCwd {
-			dirs = append(dirs, filepath.Join(absCwd, "skills"))
+		if absDefault, err := filepath.Abs(getDefaultStoragePath()); err == nil && absStorage == absDefault {
+			if absCwd, err := filepath.Abs(cwd); err == nil && absStorage != absCwd {
+				dirs = append(dirs, filepath.Join(absCwd, "skills"))
+			}
 		}
 	}
 

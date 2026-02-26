@@ -3,3 +3,9 @@ coverage.out
 bin/
 .review
 issue.md
+.tenazas/.registry.lock
+.tenazas/tasks/task-3000-prd-002:-persistent-status-footer.md
+.tenazas/tasks/task-3000-prd-004:-intellislash-&-command-autocomplete.md
+.tenazas/tasks/task-9000-prd-001:-visual-branding-&-ascii-banner.md
+.tenazas/tasks/task-9000-prd-003:-mode-switching-&-raw-input-handling.md
+.go-cache/

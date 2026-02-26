@@ -15,6 +15,13 @@ const (
 	StatusIdle         = "idle"
 )
 
+// Approval modes
+const (
+	ApprovalModePlan     = "PLAN"
+	ApprovalModeAutoEdit = "AUTO_EDIT"
+	ApprovalModeYolo     = "YOLO"
+)
+
 // Skill Definition (SKILL.json)
 type SkillGraph struct {
 	Name         string              `json:"skill_name"`
@@ -54,6 +61,7 @@ type Session struct {
 	Status          string            `json:"status"`     // "running", "intervention_required", "completed", "failed", "idle"
 	PendingFeedback string            `json:"pending_feedback,omitempty"` // Context for next prompt
 	Yolo            bool              `json:"yolo"`
+	ApprovalMode    string            `json:"approval_mode,omitempty"` // "plan", "auto_edit", "yolo"
 }
 
 // EnsureLocalDir creates a .tenazas directory in the session's CWD

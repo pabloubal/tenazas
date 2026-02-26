@@ -155,7 +155,11 @@ func (e *Engine) callLLM(state *StateDef, sess *Session) (string, error) {
 	e.log(sess, AuditLLMPrompt, state.SessionRole, prompt)
 
 	roleID := sess.RoleCache[state.SessionRole]
-	return e.exec.Run(roleID, prompt, sess.CWD, state.ApprovalMode, sess.Yolo, e.onChunk(sess, state), e.onSID(sess, state))
+	approvalMode := state.ApprovalMode
+	if approvalMode == "" {
+		approvalMode = sess.ApprovalMode
+	}
+	return e.exec.Run(roleID, prompt, sess.CWD, approvalMode, sess.Yolo, e.onChunk(sess, state), e.onSID(sess, state))
 }
 
 func (e *Engine) handleRetry(state *StateDef, sess *Session, feedback string) {
@@ -257,7 +261,7 @@ func (e *Engine) ExecutePrompt(sess *Session, prompt string) {
 	e.log(sess, AuditLLMPrompt, "user", prompt)
 
 	geminiSID := sess.RoleCache["default"]
-	_, err := e.exec.Run(geminiSID, prompt, sess.CWD, "", sess.Yolo, func(chunk string) {
+	_, err := e.exec.Run(geminiSID, prompt, sess.CWD, sess.ApprovalMode, sess.Yolo, func(chunk string) {
 		e.sm.AppendAudit(sess, AuditEntry{Type: AuditLLMChunk, Source: "gemini", Content: chunk})
 	}, func(newSID string) {
 		sess.RoleCache["default"] = newSID
