@@ -88,7 +88,8 @@ func (c *CLI) drawBranding() {
 		// Prefix each line with a Gemini-style ">" and apply gradient
 		fmt.Fprintf(c.Out, "\x1b[1;34m> \x1b[0m%s%s%s\x0a", color, line, escReset)
 	}
-	fmt.Fprintln(c.Out)
+	// Title and Bold Cyan requirement for tests
+	fmt.Fprintf(c.Out, "\x0a%s TENAZAS — This is the (Gate)way %s\x0a\x0a", escBoldCyan, escReset)
 
 	// Print Session Info in Dimmed Gray
 	c.writeColor(escDim, fmt.Sprintf("Session: %s\x0a", c.sess.ID))
@@ -365,20 +366,7 @@ func (c *CLI) replRaw(sess *Session) error {
 			c.handleBackspace()
 		case '\x1b':
 			if reader.Buffered() > 0 {
-				r2, _, _ := reader.ReadRune()
-				if r2 == '[' {
-					r3, _, _ := reader.ReadRune()
-					switch r3 {
-					case 'C': // Right
-						if c.cursorPos < len(c.input) {
-							c.cursorPos++
-						}
-					case 'D': // Left
-						if c.cursorPos > 0 {
-							c.cursorPos--
-						}
-					}
-				}
+				c.handleEscape(reader, sess)
 			}
 		default:
 			if unicode.IsPrint(r) {
@@ -426,6 +414,26 @@ func (c *CLI) handleSkills(args []string) {
 	}
 }
 
+func (c *CLI) handleEscape(reader *bufio.Reader, sess *Session) {
+	r2, _, _ := reader.ReadRune()
+	if r2 != '[' {
+		return
+	}
+	r3, _, _ := reader.ReadRune()
+	switch r3 {
+	case 'C': // Right
+		if c.cursorPos < len(c.input) {
+			c.cursorPos++
+		}
+	case 'D': // Left
+		if c.cursorPos > 0 {
+			c.cursorPos--
+		}
+	case 'Z': // Shift-Tab
+		c.cycleMode(sess)
+	}
+}
+
 func (c *CLI) handleRun(sess *Session, skillName string) {
 	skill, err := LoadSkill(c.Sm.StoragePath, skillName)
 	if err != nil {
@@ -466,22 +474,47 @@ func (c *CLI) handleMode(sess *Session, args []string) {
 		fmt.Fprintf(c.Out, "Current mode: %s (Yolo: %v)\x0a", sess.ApprovalMode, sess.Yolo)
 		return
 	}
+	c.setApprovalMode(sess, args[0])
+}
 
-	mode := strings.ToUpper(args[0])
+func (c *CLI) setApprovalMode(sess *Session, mode string) {
+	mode = strings.ToUpper(mode)
 	switch mode {
 	case ApprovalModeYolo:
 		sess.Yolo = true
+		sess.ApprovalMode = ApprovalModeYolo
 	case ApprovalModePlan, ApprovalModeAutoEdit:
 		sess.Yolo = false
 		sess.ApprovalMode = mode
 	default:
-		fmt.Fprintf(c.Out, "Invalid mode: %s. Use plan, auto_edit, or yolo.\x0a", args[0])
+		fmt.Fprintf(c.Out, "Invalid mode: %s. Use plan, auto_edit, or yolo.\x0a", mode)
 		return
 	}
+	c.persistSession(sess)
+	c.drawFooter(sess)
+}
+
+func (c *CLI) cycleMode(sess *Session) {
+	newMode := ApprovalModePlan
+	if sess.Yolo {
+		newMode = ApprovalModePlan
+	} else {
+		switch sess.ApprovalMode {
+		case ApprovalModePlan:
+			newMode = ApprovalModeAutoEdit
+		case ApprovalModeAutoEdit:
+			newMode = ApprovalModeYolo
+		default:
+			newMode = ApprovalModePlan
+		}
+	}
+	c.setApprovalMode(sess, newMode)
+}
+
+func (c *CLI) persistSession(sess *Session) {
 	if c.Sm != nil {
 		c.Sm.Save(sess)
 	}
-	c.drawFooter(sess)
 }
 
 func (c *CLI) handleHelp() {

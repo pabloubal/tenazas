@@ -43,6 +43,8 @@ func enableRawMode(fd int) (*syscall.Termios, error) {
 	// Apply raw mode flags. On Linux, flags are usually uint32.
 	raw.Iflag &^= uint32(syscall.ICRNL | syscall.IXON)
 	raw.Lflag &^= uint32(syscall.ECHO | syscall.ICANON | syscall.ISIG | syscall.IEXTEN)
+	raw.Cc[syscall.VMIN] = 1
+	raw.Cc[syscall.VTIME] = 0
 
 	if err := ioctl(fd, syscall.TCSETS, uintptr(unsafe.Pointer(&raw))); err != nil {
 		return nil, err
