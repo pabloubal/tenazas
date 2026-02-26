@@ -49,4 +49,12 @@ func TestCLIBasic(t *testing.T) {
 	if !strings.Contains(output, "Test log entry") {
 		t.Errorf("expected output to contain 'Test log entry', got %s", output)
 	}
+
+	// Verify Branding and Session Info
+	if !strings.Contains(output, "TENAZAS") {
+		t.Errorf("expected output to contain 'TENAZAS' banner, got %s", output)
+	}
+	if !strings.Contains(output, sess.ID) {
+		t.Errorf("expected output to contain session ID: %s", sess.ID)
+	}
 }
