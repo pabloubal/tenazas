@@ -27,6 +27,11 @@ func main() {
 	exec := NewExecutor(cfg.GeminiBinPath, cfg.StorageDir)
 	engine := NewEngine(sm, exec, cfg.MaxLoops)
 
+	if len(os.Args) > 1 && os.Args[1] == "work" {
+		HandleWorkCommand(os.Args[2:])
+		return
+	}
+
 	// Start Interfaces
 	tg := setupTelegram(cfg, sm, exec, reg, engine)
 	hb := NewHeartbeatRunner(cfg.StorageDir, sm, engine, tg)
@@ -36,14 +41,14 @@ func main() {
 		resumeBackgroundSessions(sm, engine, cfg.StorageDir)
 	}
 
-		handleSignals()
-	
-		// Run CLI
-		cli := NewCLI(sm, exec, reg, engine)
-		if err := cli.Run(*resume); err != nil {
-			fmt.Printf("CLI Error: %v\x0a", err)
-		}
+	handleSignals()
+
+	// Run CLI
+	cli := NewCLI(sm, exec, reg, engine)
+	if err := cli.Run(*resume); err != nil {
+		fmt.Printf("CLI Error: %v\x0a", err)
 	}
+}
 
 func setupTelegram(cfg *Config, sm *SessionManager, exec *Executor, reg *Registry, engine *Engine) *Telegram {
 	if cfg.TelegramToken == "" {

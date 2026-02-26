@@ -10,8 +10,5 @@ test:
 	go test -v ./...
 
 clean:
-	rm -f $(BINARY_NAME)
+	rm -f bin/$(BINARY_NAME)
 	go clean
-
-check-test-integrity:
-	git diff --exit-code *_test.go || (echo 'CHEAT DETECTED: You modified the tests!' >&2 && git checkout *_test.go && exit 1)

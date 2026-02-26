@@ -1,3 +1,5 @@
 skills/
 coverage.out
 bin/
+.review
+issue.md
