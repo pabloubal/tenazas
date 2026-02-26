@@ -151,6 +151,9 @@ func (tg *Telegram) broadcastAudit(sessionID string, audit AuditEntry, f *HtmlFo
 }
 
 func (tg *Telegram) shouldDisplay(verbosity, auditType string) bool {
+	if auditType == AuditLLMThought {
+		return false
+	}
 	switch verbosity {
 	case "LOW":
 		return auditType == AuditIntervention || auditType == AuditStatus
@@ -306,10 +309,29 @@ func (tg *Telegram) handleCommand(chatID int64, instanceID, text string) {
 			fmt.Sscanf(parts[1], "%d", &n)
 		}
 		tg.showLastLogs(chatID, instanceID, n)
+	case "/help":
+		tg.showHelp(chatID)
 	default:
 		tg.Call("sendMessage", map[string]interface{}{"chat_id": chatID, "text": "Unknown command: " + cmd})
 	}
 }
+
+func (tg *Telegram) showHelp(chatID int64) {
+	helpText := `<b>Tenazas Help</b>
+/help - Show this help message
+/resume - Resume a previous session
+/yolo - Toggle YOLO mode (autonomous mode)
+/verbosity [LOW|MEDIUM|HIGH] - Set event verbosity
+/run [skill] - Run a skill from your skills folder
+/last [n] - Show the last N audit log entries for the session
+`
+	tg.Call("sendMessage", map[string]interface{}{
+		"chat_id":    chatID,
+		"text":       helpText,
+		"parse_mode": "HTML",
+	})
+}
+
 
 func (tg *Telegram) toggleYolo(chatID int64, instanceID string) {
 	state, err := tg.Reg.Get(instanceID)

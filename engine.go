@@ -159,7 +159,10 @@ func (e *Engine) callLLM(state *StateDef, sess *Session) (string, error) {
 	if approvalMode == "" {
 		approvalMode = sess.ApprovalMode
 	}
-	return e.exec.Run(roleID, prompt, sess.CWD, approvalMode, sess.Yolo, e.onChunk(sess, state), e.onSID(sess, state))
+	onChunk := e.onChunk(sess, state)
+	resp, err := e.exec.Run(roleID, prompt, sess.CWD, approvalMode, sess.Yolo, onChunk, e.onSID(sess, state))
+	onChunk("")
+	return resp, err
 }
 
 func (e *Engine) handleRetry(state *StateDef, sess *Session, feedback string) {
@@ -234,9 +237,71 @@ func (e *Engine) buildPrompt(state *StateDef, sess *Session) string {
 }
 
 func (e *Engine) onChunk(sess *Session, state *StateDef) func(string) {
-	return func(chunk string) {
-		e.sm.AppendAudit(sess, AuditEntry{Type: AuditLLMChunk, Source: state.SessionRole, Content: chunk})
+	parser := &thoughtParser{
+		onThought: func(t string) { e.log(sess, AuditLLMThought, state.SessionRole, t) },
+		onText:    func(t string) { e.sm.AppendAudit(sess, AuditEntry{Type: AuditLLMChunk, Source: state.SessionRole, Content: t}) },
 	}
+	return parser.parse
+}
+
+type thoughtParser struct {
+	inThought bool
+	buffer    string
+	onThought func(string)
+	onText    func(string)
+}
+
+func (p *thoughtParser) parse(chunk string) {
+	if chunk == "" {
+		p.flush()
+		return
+	}
+
+	p.buffer += chunk
+	for {
+		targetTag, emit := "<thought>", p.onText
+		if p.inThought {
+			targetTag, emit = "</thought>", p.onThought
+		}
+
+		idx := strings.Index(p.buffer, "<")
+		if idx == -1 {
+			emit(p.buffer)
+			p.buffer = ""
+			return
+		}
+
+		if idx > 0 {
+			emit(p.buffer[:idx])
+			p.buffer = p.buffer[idx:]
+		}
+
+		// Buffer now starts with "<"
+		if strings.HasPrefix(p.buffer, targetTag) {
+			p.buffer = p.buffer[len(targetTag):]
+			p.inThought = !p.inThought
+			continue
+		}
+
+		if strings.HasPrefix(targetTag, p.buffer) {
+			return
+		}
+
+		emit(p.buffer[:1])
+		p.buffer = p.buffer[1:]
+	}
+}
+
+func (p *thoughtParser) flush() {
+	if p.buffer == "" {
+		return
+	}
+	if p.inThought {
+		p.onThought(p.buffer)
+	} else {
+		p.onText(p.buffer)
+	}
+	p.buffer = ""
 }
 
 func (e *Engine) onSID(sess *Session, state *StateDef) func(string) {
@@ -261,12 +326,12 @@ func (e *Engine) ExecutePrompt(sess *Session, prompt string) {
 	e.log(sess, AuditLLMPrompt, "user", prompt)
 
 	geminiSID := sess.RoleCache["default"]
-	_, err := e.exec.Run(geminiSID, prompt, sess.CWD, sess.ApprovalMode, sess.Yolo, func(chunk string) {
-		e.sm.AppendAudit(sess, AuditEntry{Type: AuditLLMChunk, Source: "gemini", Content: chunk})
-	}, func(newSID string) {
+	onChunk := e.onChunk(sess, &StateDef{SessionRole: "gemini"})
+	_, err := e.exec.Run(geminiSID, prompt, sess.CWD, sess.ApprovalMode, sess.Yolo, onChunk, func(newSID string) {
 		sess.RoleCache["default"] = newSID
 		e.sm.Save(sess)
 	})
+	onChunk("")
 
 	if err != nil {
 		e.log(sess, AuditInfo, "engine", "LLM Error: "+err.Error())
@@ -279,9 +344,15 @@ func (e *Engine) resolveInstruction(instr, cwd string) string {
 	}
 
 	filename := strings.TrimPrefix(instr, "@")
+	fullPath, err := e.sm.storage.ResolvePath(instr, e.sm.storage.BaseDir)
+	if err != nil {
+		return "Error: " + err.Error()
+	}
+
 	paths := []string{
 		filepath.Join(e.sm.storage.BaseDir, "skills", filename),
 		filepath.Join(cwd, filename),
+		fullPath,
 	}
 
 	for _, path := range paths {

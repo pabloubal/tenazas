@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unicode"
@@ -29,6 +30,23 @@ type CLI struct {
 	completionIdx int
 	inRawMode     bool
 	oldTermState  interface{}
+	mu            sync.Mutex
+	IsImmersive   bool
+	drawer        []string
+	lastTabTime   time.Time
+	isThinking    bool
+	pulseFrame    int
+	lastThought   string // Accumulated CoT for the footer hint
+	skillCount    int    // Cached count for footer
+}
+
+func (c *CLI) refreshSkillCount() {
+	if c.Sm != nil {
+		skills, _ := ListSkills(c.Sm.StoragePath)
+		c.mu.Lock()
+		c.skillCount = len(skills)
+		c.mu.Unlock()
+	}
 }
 
 func NewCLI(sm *SessionManager, exec *Executor, reg *Registry, engine *Engine) *CLI {
@@ -52,7 +70,45 @@ const (
 	escCyan          = "\x1b[36m"
 	escBoldCyan      = "\x1b[1;36m"
 	escDim           = "\x1b[2m"
+	escHideCursor    = "\x1b[?25l"
+	escShowCursor    = "\x1b[?25h"
+	escScrollRegion  = "\x1b[%d;%dr"
+	escMoveTo        = "\x1b[%d;1H"
+	escMoveRight     = "\x1b[%dC"
+	escClearToEOL    = "\x1b[K"
+	escCR            = "\r"
 )
+
+const (
+	drawerHeight      = 8
+	doubleTabInterval = 300 * time.Millisecond
+	promptNormal      = "‹ › "
+	promptPulse       = "« » "
+	promptOffset      = 4
+)
+
+func (c *CLI) getPrompt() string {
+	if !c.isThinking {
+		return promptNormal
+	}
+	if c.pulseFrame%2 == 1 {
+		return promptPulse
+	}
+	return promptNormal
+}
+
+func (c *CLI) write(s string) {
+	if c.Out == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.writeLocked(s)
+}
+
+func (c *CLI) writeLocked(s string) {
+	fmt.Fprint(c.Out, s)
+}
 
 const asciiBanner = `
  ████████╗███████╗███╗   ██╗ █████╗ ███████╗ █████╗ ███████╗
@@ -64,13 +120,20 @@ const asciiBanner = `
 `
 
 func (c *CLI) writeColor(color, text string) {
-	fmt.Fprint(c.Out, color, text, escReset)
+	c.write(color + text + escReset)
 }
 
-func (c *CLI) drawBranding() {
+func (c *CLI) writeAtomic(sb *strings.Builder, fn func(*strings.Builder)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	fn(sb)
+	if c.Out != nil {
+		c.writeLocked(sb.String())
+	}
+}
+
+func (c *CLI) drawBrandingAtomic(sb *strings.Builder) {
 	lines := strings.Split(strings.Trim(asciiBanner, "\x0a"), "\x0a")
-	// Gradient from Blue (DeepSkyBlue1) to Cyan (Cyan1)
-	// 256-color palette: 33, 39, 45, 51
 	colors := []string{
 		"\x1b[38;5;33m",
 		"\x1b[38;5;39m",
@@ -85,21 +148,26 @@ func (c *CLI) drawBranding() {
 		if i < len(colors) {
 			color = colors[i]
 		}
-		// Prefix each line with a Gemini-style ">" and apply gradient
-		fmt.Fprintf(c.Out, "\x1b[1;34m> \x1b[0m%s%s%s\x0a", color, line, escReset)
+		fmt.Fprintf(sb, "\x1b[1;34m%s\x1b[0m%s%s%s\x0a", promptNormal, color, line, escReset)
 	}
-	// Title and Bold Cyan requirement for tests
-	fmt.Fprintf(c.Out, "\x0a%s TENAZAS — This is the (Gate)way %s\x0a\x0a", escBoldCyan, escReset)
+	fmt.Fprintf(sb, "\x0a%s TENAZAS — This is the (Gate)way %s\x0a\x0a", escBoldCyan, escReset)
 
-	// Print Session Info in Dimmed Gray
-	c.writeColor(escDim, fmt.Sprintf("Session: %s\x0a", c.sess.ID))
-	c.writeColor(escDim, fmt.Sprintf("Path:    %s\x0a\x0a", c.sess.CWD))
+	if c.sess != nil {
+		fmt.Fprintf(sb, "%sSession: %s%s\x0a", escDim, c.sess.ID, escReset)
+		fmt.Fprintf(sb, "%sPath:    %s%s\x0a\x0a", escDim, c.sess.CWD, escReset)
+	}
+}
+
+func (c *CLI) drawBranding() {
+	var sb strings.Builder
+	c.drawBrandingAtomic(&sb)
+	c.write(sb.String())
 }
 
 func (c *CLI) Run(resume bool) error {
 	sess, err := c.initializeSession(resume)
 	if err != nil {
-		fmt.Fprintln(c.Out, "Error:", err)
+		c.write(fmt.Sprintln("Error:", err))
 		return nil
 	}
 	c.sess = sess
@@ -110,6 +178,7 @@ func (c *CLI) Run(resume bool) error {
 
 	c.writeEscape(escClear)
 	c.setupTerminal()
+	c.refreshSkillCount()
 	defer c.writeEscape("\x1b[r") // Restore scrolling region
 
 	// Insert branding here
@@ -121,27 +190,142 @@ func (c *CLI) Run(resume bool) error {
 	go func() {
 		for range sigChan {
 			c.setupTerminal()
+			c.mu.Lock()
+			isImm := c.IsImmersive
+			c.mu.Unlock()
+			if isImm {
+				c.drawDrawer()
+				c.renderLine()
+			}
 		}
 	}()
 
-	fmt.Fprintln(c.Out, "Commands: /run <skill>, /last <N>, /intervene <action>, /mode <plan|auto_edit|yolo>")
+	c.write("Commands: /run <skill>, /last <N>, /intervene <action>, /mode <plan|auto_edit|yolo>\x0a")
 
 	if resume && sess.SkillName != "" {
 		c.resumeSkill(sess)
 	}
 
 	go c.listenEvents(sess.ID)
+	go c.pulseLoop()
 
 	return c.repl(sess)
 }
 
+func (c *CLI) pulseLoop() {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	for range ticker.C {
+		c.mu.Lock()
+		if !c.isThinking {
+			c.mu.Unlock()
+			continue
+		}
+		c.pulseFrame++
+		c.mu.Unlock()
+		c.renderLine()
+	}
+}
+
+func (c *CLI) selectSession() (*Session, error) {
+	fd := int(syscall.Stdin)
+	oldState, err := enableRawMode(fd)
+	if err != nil {
+		return nil, fmt.Errorf("failed to enable raw mode: %v", err)
+	}
+	defer restoreTerminal(fd, oldState)
+
+	page := 0
+	pageSize := 10
+	selectedIndex := 0
+
+	for {
+		sessions, total, err := c.Sm.List(page, pageSize)
+		if err != nil {
+			return nil, fmt.Errorf("could not list sessions: %v", err)
+		}
+		if total == 0 {
+			c.write("No sessions found to resume.\x0a")
+			return nil, fmt.Errorf("no sessions to resume")
+		}
+
+		var sb strings.Builder
+		sb.WriteString(escClear)
+		sb.WriteString(escHideCursor)
+		defer c.write(escShowCursor)
+
+		totalPages := (total + pageSize - 1) / pageSize
+		fmt.Fprintf(&sb, "Select a session to resume (Page %d/%d):\x0a\x0a", page+1, totalPages)
+
+		for i, s := range sessions {
+			cursor := "  "
+			if i == selectedIndex {
+				cursor = escBoldCyan + "› " + escReset
+			}
+			title := s.Title
+			if title == "" {
+				title = s.CWD
+			}
+			if len(title) > 60 {
+				title = "..." + title[len(title)-57:]
+			}
+
+			ts := s.LastUpdated.Format("2006-01-02 15:04")
+			skill := ""
+			if s.SkillName != "" {
+				skill = fmt.Sprintf("(%s)", s.SkillName)
+			}
+			fmt.Fprintf(&sb, "%s%-60s %s [%s] %s\x0a", cursor, title, ts, s.ID[:8], skill)
+		}
+		fmt.Fprintf(&sb, "\x0a  %sUse ↑/↓ to navigate, ←/→ for pages, Enter to select, q to quit.%s\x0a", escDim, escReset)
+		c.write(sb.String())
+
+		reader := bufio.NewReader(c.In)
+		r, _, err := reader.ReadRune()
+		if err != nil {
+			return nil, err
+		}
+
+		switch r {
+		case 'q', '\x03': // q or Ctrl-C
+			return nil, fmt.Errorf("aborted")
+		case '\r', '\n':
+			if selectedIndex < len(sessions) {
+				return &sessions[selectedIndex], nil
+			}
+		case '\x1b': // escape sequence
+			if reader.Buffered() > 0 {
+				r2, _, _ := reader.ReadRune()
+				if r2 == '[' {
+					r3, _, _ := reader.ReadRune()
+					switch r3 {
+					case 'A': // Up
+						if selectedIndex > 0 {
+							selectedIndex--
+						}
+					case 'B': // Down
+						if selectedIndex < len(sessions)-1 {
+							selectedIndex++
+						}
+					case 'C': // Right
+						if (page+1)*pageSize < total {
+							page++
+							selectedIndex = 0
+						}
+					case 'D': // Left
+						if page > 0 {
+							page--
+							selectedIndex = 0
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
 func (c *CLI) initializeSession(resume bool) (*Session, error) {
 	if resume {
-		sess, err := c.Sm.GetLatest()
-		if err == nil && sess.ApprovalMode == "" {
-			sess.ApprovalMode = ApprovalModePlan
-		}
-		return sess, err
+		return c.selectSession()
 	}
 
 	cwd, _ := os.Getwd()
@@ -160,11 +344,21 @@ func (c *CLI) resumeSkill(sess *Session) {
 	skill, err := LoadSkill(c.Sm.StoragePath, sess.SkillName)
 	if err == nil {
 		if sess.Status != StatusRunning && sess.Status != StatusIntervention {
-			fmt.Fprintf(c.Out, "Resuming task: %s (Skill: %s)\x0a", sess.ID, sess.SkillName)
+			c.write(fmt.Sprintf("Resuming task: %s (Skill: %s)\x0a", sess.ID, sess.SkillName))
 			sess.Status = StatusRunning
 			c.Sm.Save(sess)
 		}
 		go c.Engine.Run(skill, sess)
+	}
+}
+
+func (c *CLI) setThinking(thinking bool) {
+	c.mu.Lock()
+	changed := c.isThinking != thinking
+	c.isThinking = thinking
+	c.mu.Unlock()
+	if changed {
+		c.renderLine()
 	}
 }
 
@@ -174,21 +368,68 @@ func (c *CLI) listenEvents(sessionID string) {
 
 	for e := range eventCh {
 		if e.SessionID == sessionID && e.Type == EventAudit {
-			audit := e.Payload.(AuditEntry)
-			if audit.Type == AuditLLMChunk {
-				fmt.Fprint(c.Out, audit.Content)
+			audit, ok := e.Payload.(AuditEntry)
+			if !ok {
 				continue
 			}
 
-			fmt.Fprintf(c.Out, "\x0a%s\x0a", formatter.Format(audit))
+			// Update thinking state
+			if audit.Type == AuditLLMPrompt {
+				c.mu.Lock()
+				c.lastThought = ""
+				c.mu.Unlock()
+				c.setThinking(true)
+			} else if audit.Type == AuditLLMChunk || audit.Type == AuditLLMThought {
+				c.setThinking(false)
+			}
+
+			// Thoughts always go to the drawer
+			if audit.Type == AuditLLMThought {
+				c.mu.Lock()
+				c.lastThought += audit.Content
+				c.mu.Unlock()
+				c.addThought(audit.Content)
+				continue
+			}
+
+			// Chunks stream directly to main area
+			if audit.Type == AuditLLMChunk {
+				c.write(audit.Content)
+				continue
+			}
+
+			// Skip printing full response if we already streamed chunks
+			if audit.Type == AuditLLMResponse {
+				continue
+			}
+
+			// Background logs go to drawer if immersive, or both if not
+			if audit.Type == AuditCmdResult || audit.Type == AuditStatus || audit.Type == AuditInfo {
+				formatted := formatter.Format(audit)
+				c.addThought(formatted)
+				c.mu.Lock()
+				isImm := c.IsImmersive
+				c.mu.Unlock()
+				if isImm {
+					continue
+				}
+			}
+
+			c.write(fmt.Sprintf("\x0a%s\x0a", formatter.Format(audit)))
 			if audit.Type == AuditIntervention {
-				fmt.Fprint(c.Out, "\x0aType `/intervene <retry|proceed_to_fail|abort>`\x0a> ")
+				c.write("\x0aType `/intervene <retry|proceed_to_fail|abort>`\x0a" + promptNormal)
 			}
 		}
 	}
 }
 
 func (c *CLI) resetCompletions() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.resetCompletionsLocked()
+}
+
+func (c *CLI) resetCompletionsLocked() {
 	c.completions = nil
 	c.completionIdx = -1
 }
@@ -237,10 +478,63 @@ func (c *CLI) getDimmedSuggestion(line string) string {
 	return ""
 }
 
+func (c *CLI) redrawScreenLocked() {
+	var sb strings.Builder
+	sb.WriteString(escClear)
+	c.setupTerminalAtomic(&sb)
+	c.drawBrandingAtomic(&sb)
+	c.redrawAllAtomic(&sb)
+	c.writeLocked(sb.String())
+}
+
+func (c *CLI) toggleImmersive() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.IsImmersive = !c.IsImmersive
+	c.redrawScreenLocked()
+}
+
 func (c *CLI) handleTab() {
-	if len(c.completions) == 0 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.handleTabLocked(c.sess)
+}
+
+func (c *CLI) handleTabLocked(sess *Session) {
+	now := time.Now()
+	if !c.lastTabTime.IsZero() && now.Sub(c.lastTabTime) < doubleTabInterval {
+		if c.shouldToggleImmersiveLocked(now) {
+			c.IsImmersive = !c.IsImmersive
+			c.lastTabTime = time.Time{}
+			c.redrawScreenLocked()
+			return
+		}
+	}
+	c.lastTabTime = now
+	c.cycleCompletionsLocked()
+}
+
+func (c *CLI) shouldToggleImmersiveLocked(now time.Time) bool {
+	if !c.inRawMode && now.Sub(c.lastTabTime) <= 10*time.Millisecond {
+		return false
+	}
+	if len(c.completions) > 0 && c.completionIdx >= 0 && c.completionIdx < len(c.completions) {
+		return string(c.input) == c.completions[c.completionIdx]
+	}
+	return len(c.completions) == 0
+}
+
+func (c *CLI) cycleCompletions() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cycleCompletionsLocked()
+}
+
+func (c *CLI) cycleCompletionsLocked() {
+	if len(c.completions) == 0 || (c.completionIdx >= 0 && c.completionIdx < len(c.completions) && string(c.input) != c.completions[c.completionIdx]) {
 		c.completions = c.getCompletions(string(c.input))
 		if len(c.completions) == 0 {
+			c.completionIdx = -1
 			return
 		}
 		c.completionIdx = 0
@@ -253,34 +547,70 @@ func (c *CLI) handleTab() {
 }
 
 func (c *CLI) handleRune(r rune) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.handleRuneLocked(r)
+}
+
+func (c *CLI) handleRuneLocked(r rune) {
 	// Insert at cursorPos
 	c.input = append(c.input[:c.cursorPos], append([]rune{r}, c.input[c.cursorPos:]...)...)
 	c.cursorPos++
-	c.resetCompletions()
+	c.updateCompletionsLocked()
 }
 
 func (c *CLI) handleBackspace() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.handleBackspaceLocked()
+}
+
+func (c *CLI) handleBackspaceLocked() {
 	if c.cursorPos > 0 {
 		c.input = append(c.input[:c.cursorPos-1], c.input[c.cursorPos:]...)
 		c.cursorPos--
-		c.resetCompletions()
-		if strings.HasPrefix(string(c.input), "/") {
-			c.completions = c.getCompletions(string(c.input))
-		}
+		c.updateCompletionsLocked()
 	}
 }
 
-func (c *CLI) renderLine() {
-	line := string(c.input)
-	fmt.Fprintf(c.Out, "\r> %s", line)
+func (c *CLI) updateCompletionsLocked() {
+	c.resetCompletionsLocked()
+	if strings.HasPrefix(string(c.input), "/") {
+		c.completions = c.getCompletions(string(c.input))
+	}
+}
 
-	if suggestion := c.getDimmedSuggestion(line); suggestion != "" {
-		c.writeColor(escDim, suggestion)
+func (c *CLI) renderLineAtomic(sb *strings.Builder) {
+	if c.IsImmersive {
+		rows, _ := c.getTermSize()
+		fmt.Fprintf(sb, escMoveTo, c.promptRow(rows))
 	}
 
-	fmt.Fprint(c.Out, "\x1b[K")
-	// Position cursor: prompt "> " is 2 characters
-	fmt.Fprintf(c.Out, "\r\x1b[%dC", c.cursorPos+2)
+	prompt := c.getPrompt()
+	if c.isThinking {
+		sb.WriteString(escCyan)
+	}
+
+	line := string(c.input)
+	fmt.Fprintf(sb, "%s%s%s", escCR, prompt, line)
+
+	if c.isThinking {
+		sb.WriteString(escReset)
+	}
+
+	if suggestion := c.getDimmedSuggestion(line); suggestion != "" {
+		fmt.Fprintf(sb, "%s%s%s", escDim, suggestion, escReset)
+	}
+
+	sb.WriteString(escClearToEOL)
+	fmt.Fprintf(sb, escCR+escMoveRight, c.cursorPos+promptOffset)
+}
+
+func (c *CLI) renderLine() {
+	var sb strings.Builder
+	c.writeAtomic(&sb, func(sb *strings.Builder) {
+		c.renderLineAtomic(sb)
+	})
 }
 
 func (c *CLI) handleCommand(sess *Session, text string) {
@@ -328,7 +658,7 @@ func (c *CLI) repl(sess *Session) error {
 	// Fallback to basic scanner
 	scanner := bufio.NewScanner(c.In)
 	for {
-		fmt.Fprint(c.Out, "\x0a> ")
+		c.write("\x0a" + promptNormal)
 		if !scanner.Scan() {
 			return io.EOF
 		}
@@ -340,6 +670,7 @@ func (c *CLI) repl(sess *Session) error {
 }
 
 func (c *CLI) replRaw(sess *Session) error {
+	c.inRawMode = true
 	reader := bufio.NewReader(c.In)
 	for {
 		c.renderLine()
@@ -348,39 +679,51 @@ func (c *CLI) replRaw(sess *Session) error {
 			return err
 		}
 
+		c.mu.Lock()
+		// Reset double-tab timer for any key except Tab
+		if r != '\t' {
+			c.lastTabTime = time.Time{}
+		}
+
 		switch r {
 		case '\x03': // Ctrl-C
+			c.mu.Unlock()
 			return nil
 		case '\r', '\n':
 			line := string(c.input)
-			fmt.Fprintln(c.Out)
+			c.input = nil
+			c.cursorPos = 0
+			c.resetCompletionsLocked()
+			c.mu.Unlock()
+
+			c.write("\x0a")
 			if line != "" {
 				c.handleCommand(sess, line)
 			}
-			c.input = nil
-			c.cursorPos = 0
-			c.resetCompletions()
 		case '\t':
-			c.handleTab()
+			c.handleTabLocked(sess)
+			c.mu.Unlock()
 		case '\x7f', '\x08': // Backspace
-			c.handleBackspace()
+			c.handleBackspaceLocked()
+			c.mu.Unlock()
 		case '\x1b':
+			c.mu.Unlock()
 			if reader.Buffered() > 0 {
 				c.handleEscape(reader, sess)
 			}
 		default:
 			if unicode.IsPrint(r) {
-				c.handleRune(r)
-				if strings.HasPrefix(string(c.input), "/") {
-					c.completions = c.getCompletions(string(c.input))
-				}
+				c.handleRuneLocked(r)
 			}
+			c.mu.Unlock()
 		}
 	}
 }
 
 func (c *CLI) handleSkills(args []string) {
 	c.Sm.RefreshSkillRegistry()
+	defer c.refreshSkillCount()
+
 	if len(args) >= 2 && args[0] == "toggle" {
 		name := args[1]
 		active, _ := c.Sm.GetActiveSkills()
@@ -404,40 +747,20 @@ func (c *CLI) handleSkills(args []string) {
 		activeMap[s] = true
 	}
 
-	fmt.Fprintln(c.Out, "STATUS  NAME")
+	c.write("STATUS  NAME\x0a")
 	for _, s := range all {
 		status := "[ ]"
 		if activeMap[s] {
 			status = "[X]"
 		}
-		fmt.Fprintf(c.Out, "%-7s %s\x0a", status, s)
-	}
-}
-
-func (c *CLI) handleEscape(reader *bufio.Reader, sess *Session) {
-	r2, _, _ := reader.ReadRune()
-	if r2 != '[' {
-		return
-	}
-	r3, _, _ := reader.ReadRune()
-	switch r3 {
-	case 'C': // Right
-		if c.cursorPos < len(c.input) {
-			c.cursorPos++
-		}
-	case 'D': // Left
-		if c.cursorPos > 0 {
-			c.cursorPos--
-		}
-	case 'Z': // Shift-Tab
-		c.cycleMode(sess)
+		c.write(fmt.Sprintf("%-7s %s\x0a", status, s))
 	}
 }
 
 func (c *CLI) handleRun(sess *Session, skillName string) {
 	skill, err := LoadSkill(c.Sm.StoragePath, skillName)
 	if err != nil {
-		fmt.Fprintln(c.Out, "Skill error:", err)
+		c.write(fmt.Sprintln("Skill error:", err))
 		return
 	}
 	sess.SkillName = skillName
@@ -448,36 +771,111 @@ func (c *CLI) handleRun(sess *Session, skillName string) {
 func (c *CLI) handleLast(sess *Session, n int) {
 	logs, _ := c.Sm.GetLastAudit(sess, n)
 	formatter := &AnsiFormatter{}
+	var output strings.Builder
 	for _, l := range logs {
-		fmt.Fprintln(c.Out, formatter.Format(l))
+		fmt.Fprintln(&output, formatter.Format(l))
 	}
+	c.write(output.String())
 }
 
-func formatFooter(mode string, yolo bool, skillCount int, sessionID string) string {
-	m := mode
+func formatFooter(mode string, yolo bool, skillCount int, hint string) string {
+	displayMode := mode
 	if yolo {
-		m = ApprovalModeYolo
-	} else if m == "" {
-		m = ApprovalModePlan
+		displayMode = ApprovalModeYolo
+	} else if displayMode == "" {
+		displayMode = ApprovalModePlan
 	}
 
-	shortID := sessionID
-	if len(sessionID) > 8 {
-		shortID = sessionID[len(sessionID)-8:]
-	}
-
-	return fmt.Sprintf("[%s] | Skills: %d | Session: ...%s", m, skillCount, shortID)
+	condensedHint := strings.Join(strings.Fields(hint), " ")
+	return fmt.Sprintf("[%s] | Skills: %d | Thought: %s", displayMode, skillCount, condensedHint)
 }
 
 func (c *CLI) handleMode(sess *Session, args []string) {
 	if len(args) == 0 {
-		fmt.Fprintf(c.Out, "Current mode: %s (Yolo: %v)\x0a", sess.ApprovalMode, sess.Yolo)
+		c.write(fmt.Sprintf("Current mode: %s (Yolo: %v)\x0a", sess.ApprovalMode, sess.Yolo))
 		return
 	}
 	c.setApprovalMode(sess, args[0])
 }
 
+func (c *CLI) persistSession(sess *Session) {
+	if c.Sm != nil {
+		c.Sm.Save(sess)
+	}
+}
+
+func (c *CLI) handleHelp() {
+	var output strings.Builder
+	fmt.Fprintln(&output, "Commands:")
+	fmt.Fprintln(&output, "  /run <skill>         Run a specific skill")
+	fmt.Fprintln(&output, "  /last <N>            Show last N audit logs")
+	fmt.Fprintln(&output, "  /intervene <action>  Resolve an intervention")
+	fmt.Fprintln(&output, "  /skills              List or toggle skills")
+	fmt.Fprintln(&output, "  /mode <mode>         Switch approval mode (plan, auto_edit, yolo)")
+	fmt.Fprintln(&output, "  /help                Show this help")
+	fmt.Fprintln(&output, "\x0aModes: plan, auto_edit, yolo")
+	c.write(output.String())
+}
+
+func (c *CLI) drawFooterAtomic(sb *strings.Builder, sess *Session) {
+	if sess == nil {
+		return
+	}
+	rows, cols := c.getTermSize()
+
+	hint := c.lastThought
+	skillCount := c.skillCount
+
+	footer := formatFooter(sess.ApprovalMode, sess.Yolo, skillCount, hint)
+
+	if len(footer) > cols {
+		footer = footer[:cols]
+	}
+
+	sb.WriteString(escSaveCursor)
+	fmt.Fprintf(sb, escMoveTo, rows)
+	sb.WriteString(escClearLine)
+	sb.WriteString(escBlueWhite)
+	fmt.Fprintf(sb, "%-*s", cols, footer)
+	sb.WriteString(escReset)
+	sb.WriteString(escRestoreCursor)
+}
+
+func (c *CLI) handleEscape(reader *bufio.Reader, sess *Session) {
+	r2, _, _ := reader.ReadRune()
+	if r2 != '[' {
+		return
+	}
+	r3, _, _ := reader.ReadRune()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	switch r3 {
+	case 'C': // Right
+		if c.cursorPos < len(c.input) {
+			c.cursorPos++
+		}
+	case 'D': // Left
+		if c.cursorPos > 0 {
+			c.cursorPos--
+		}
+	case 'Z': // Shift-Tab
+		c.cycleModeLocked(sess)
+	}
+}
+
+func (c *CLI) cycleMode(sess *Session) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cycleModeLocked(sess)
+}
+
 func (c *CLI) setApprovalMode(sess *Session, mode string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.setApprovalModeLocked(sess, mode)
+}
+
+func (c *CLI) setApprovalModeLocked(sess *Session, mode string) {
 	mode = strings.ToUpper(mode)
 	switch mode {
 	case ApprovalModeYolo:
@@ -487,14 +885,14 @@ func (c *CLI) setApprovalMode(sess *Session, mode string) {
 		sess.Yolo = false
 		sess.ApprovalMode = mode
 	default:
-		fmt.Fprintf(c.Out, "Invalid mode: %s. Use plan, auto_edit, or yolo.\x0a", mode)
+		c.writeLocked(fmt.Sprintf("Invalid mode: %s. Use plan, auto_edit, or yolo.\x0a", mode))
 		return
 	}
 	c.persistSession(sess)
-	c.drawFooter(sess)
+	c.drawFooterLocked(sess)
 }
 
-func (c *CLI) cycleMode(sess *Session) {
+func (c *CLI) cycleModeLocked(sess *Session) {
 	newMode := ApprovalModePlan
 	if sess.Yolo {
 		newMode = ApprovalModePlan
@@ -508,66 +906,115 @@ func (c *CLI) cycleMode(sess *Session) {
 			newMode = ApprovalModePlan
 		}
 	}
-	c.setApprovalMode(sess, newMode)
-}
-
-func (c *CLI) persistSession(sess *Session) {
-	if c.Sm != nil {
-		c.Sm.Save(sess)
-	}
-}
-
-func (c *CLI) handleHelp() {
-	fmt.Fprintln(c.Out, "Commands:")
-	fmt.Fprintln(c.Out, "  /run <skill>         Run a specific skill")
-	fmt.Fprintln(c.Out, "  /last <N>            Show last N audit logs")
-	fmt.Fprintln(c.Out, "  /intervene <action>  Resolve an intervention")
-	fmt.Fprintln(c.Out, "  /skills              List or toggle skills")
-	fmt.Fprintln(c.Out, "  /mode <mode>         Switch approval mode (plan, auto_edit, yolo)")
-	fmt.Fprintln(c.Out, "  /help                Show this help")
-	fmt.Fprintln(c.Out, "\x0aModes: plan, auto_edit, yolo")
+	c.setApprovalModeLocked(sess, newMode)
 }
 
 func (c *CLI) drawFooter(sess *Session) {
-	if sess == nil {
-		return
-	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.drawFooterLocked(sess)
+}
+
+func (c *CLI) drawFooterLocked(sess *Session) {
+	var sb strings.Builder
+	c.drawFooterAtomic(&sb, sess)
+	c.writeLocked(sb.String())
+}
+
+func (c *CLI) getTermSize() (int, int) {
 	rows, cols, err := getTerminalSize()
 	if err != nil {
-		rows, cols = 24, 80
+		return 24, 80
+	}
+	return rows, cols
+}
+
+func (c *CLI) drawerStartRow(rows int) int {
+	return rows - drawerHeight
+}
+
+func (c *CLI) promptRow(rows int) int {
+	return rows - drawerHeight - 1
+}
+
+func (c *CLI) setupTerminalAtomic(sb *strings.Builder) {
+	rows, _ := c.getTermSize()
+
+	bottomReserved := 1 // Just footer
+	if c.IsImmersive {
+		bottomReserved = drawerHeight + 2
 	}
 
-	skillCount := 0
-	if c.Sm != nil {
-		skills, _ := ListSkills(c.Sm.StoragePath)
-		skillCount = len(skills)
+	fmt.Fprintf(sb, escScrollRegion, 1, rows-bottomReserved)
+	if c.sess != nil {
+		c.drawFooterAtomic(sb, c.sess)
 	}
-	footer := formatFooter(sess.ApprovalMode, sess.Yolo, skillCount, sess.ID)
-
-	// Pad footer to terminal width
-	padding := ""
-	if len(footer) < cols {
-		padding = strings.Repeat(" ", cols-len(footer))
-	} else if len(footer) > cols {
-		footer = footer[:cols]
-	}
-
-	c.writeEscape(fmt.Sprintf("%s\x1b[%d;1H%s%s%s%s%s%s", escSaveCursor, rows, escClearLine, escBlueWhite, footer, padding, escReset, escRestoreCursor))
 }
 
 func (c *CLI) setupTerminal() {
-	rows, _, err := getTerminalSize()
-	if err != nil {
-		rows = 24
+	var sb strings.Builder
+	c.writeAtomic(&sb, func(sb *strings.Builder) {
+		c.setupTerminalAtomic(sb)
+	})
+}
+
+func (c *CLI) addThought(text string) {
+	var sb strings.Builder
+	c.writeAtomic(&sb, func(sb *strings.Builder) {
+		lines := strings.Split(text, "\x0a")
+		for _, l := range lines {
+			if l == "" {
+				continue
+			}
+			c.drawer = append(c.drawer, l)
+		}
+		if len(c.drawer) > drawerHeight {
+			c.drawer = c.drawer[len(c.drawer)-drawerHeight:]
+		}
+		c.redrawAllAtomic(sb)
+	})
+}
+
+func (c *CLI) redrawAllAtomic(sb *strings.Builder) {
+	if c.sess != nil {
+		c.drawFooterAtomic(sb, c.sess)
+	}
+	c.drawDrawerAtomic(sb)
+	c.renderLineAtomic(sb)
+}
+
+func (c *CLI) drawDrawerAtomic(sb *strings.Builder) {
+	if !c.IsImmersive {
+		return
 	}
 
-	// Set scrolling region: 1 to rows-1
-	c.writeEscape(fmt.Sprintf("\x1b[1;%dr", rows-1))
-	if c.sess != nil {
-		c.drawFooter(c.sess)
+	rows, cols := c.getTermSize()
+	sb.WriteString(escSaveCursor)
+
+	startRow := c.drawerStartRow(rows)
+	for i := 0; i < drawerHeight; i++ {
+		row := startRow + i
+		line := ""
+		if i < len(c.drawer) {
+			line = c.drawer[i]
+		}
+
+		if cols > 7 && len(line) > cols-4 {
+			line = line[:cols-7] + "..."
+		}
+
+		fmt.Fprintf(sb, escMoveTo+escClearLine+escDim+"• %s"+escReset, row, line)
 	}
+
+	sb.WriteString(escRestoreCursor)
+}
+
+func (c *CLI) drawDrawer() {
+	var sb strings.Builder
+	c.drawDrawerAtomic(&sb)
+	c.write(sb.String())
 }
 
 func (c *CLI) writeEscape(seq string) {
-	fmt.Fprint(c.Out, seq)
+	c.write(seq)
 }

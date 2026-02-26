@@ -26,7 +26,7 @@ func NewExecutor(binPath, storageDir string) *Executor {
 
 func (e *Executor) Run(geminiSID string, prompt string, cwd string, approvalMode string, yolo bool, onChunk func(string), onSessionID func(string)) (string, error) {
 	args := e.buildArgs(geminiSID, prompt, approvalMode, yolo)
-	
+
 	cmd := exec.Command(e.BinPath, args...)
 	cmd.Dir = cwd
 
@@ -93,12 +93,12 @@ func (e *Executor) buildArgs(geminiSID, prompt, approvalMode string, yolo bool) 
 	if geminiSID != "" {
 		args = append(args, "--resume", geminiSID)
 	}
-	if approvalMode != "" {
-		args = append(args, "--approval-mode", approvalMode)
-	}
 	if yolo {
 		args = append(args, "-y")
+	} else if approvalMode != "" {
+		args = append(args, "--approval-mode", approvalMode)
 	}
+
 	return args
 }
 

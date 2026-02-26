@@ -64,6 +64,7 @@ Tenazas now uses a subcommand structure to separate the local interface from the
 - **Multimodal**: Send an image with an optional caption. The image is saved to the session's local `.tenazas` directory and analyzed by Gemini.
 - **Switch/Resume**: Send `/resume` to see a list of sessions and pick one.
 - **YOLO Mode**: Send `/yolo` to toggle auto-approve mode for the current session.
+- **Help**: Send `/help` to see a list of all available commands.
 - **Status**: The bot streams responses in real-time, buffering updates to respect Telegram's rate limits.
 
 ## Skill System
@@ -75,6 +76,7 @@ Tenazas includes an autonomous engine that can execute complex "Skills" defined 
 - `/skills toggle <name>`: Enable or disable a specific skill.
 - `/run <skill>`: Start a skill execution in the current session.
 - `/intervene <retry|proceed_to_fail|abort>`: Manually resolve a state that requires human intervention.
+- `/help`: Show a list of all available commands.
 
 ### Autonomous TDD Workflow
 The `tdd_feature_dev` skill follows a strict engineering lifecycle:

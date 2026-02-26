@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -145,6 +146,19 @@ func (sm *SessionManager) AppendAudit(s *Session, entry AuditEntry) error {
 	relDir := sm.storage.WorkspaceDir(s.CWD)
 	fPath := filepath.Join(sm.StoragePath, relDir, s.ID+".audit.jsonl")
 	
+	// Atomic lock for the specific audit file
+	lockPath := fPath + ".lock"
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		return err
+	}
+	defer lockFile.Close()
+
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
+	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+
 	f, err := os.OpenFile(fPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return err

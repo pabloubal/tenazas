@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"io"
 	"os"
 	"strings"
 	"testing"
@@ -21,20 +20,19 @@ func TestVisualBranding(t *testing.T) {
 	exec := NewExecutor("gemini", tmpDir)
 	engine := NewEngine(sm, exec, 5)
 
-	// Mock input to just exit immediately
-	in := strings.NewReader("\x0a")
 	var out bytes.Buffer
-
 	cli := NewCLI(sm, exec, reg, engine)
-	cli.In = in
 	cli.Out = &out
 
-	// Run CLI
-	// Note: Run might return io.EOF when input is exhausted, which is expected here.
-	err = cli.Run(false)
-	if err != nil && err != io.EOF {
-		t.Fatalf("Run failed: %v", err)
+	// Initialize session so drawBranding has something to show
+	sess, err := cli.initializeSession(false)
+	if err != nil {
+		t.Fatal(err)
 	}
+	cli.sess = sess
+
+	// Run only the branding logic
+	cli.drawBranding()
 
 	output := out.String()
 

@@ -27,8 +27,8 @@ func main() {
 	exec := NewExecutor(cfg.GeminiBinPath, cfg.StorageDir)
 	engine := NewEngine(sm, exec, cfg.MaxLoops)
 
-	if len(os.Args) > 1 && os.Args[1] == "work" {
-		HandleWorkCommand(os.Args[2:])
+	if flag.Arg(0) == "work" {
+		HandleWorkCommand(cfg.StorageDir, flag.Args()[1:])
 		return
 	}
 
@@ -36,10 +36,6 @@ func main() {
 	tg := setupTelegram(cfg, sm, exec, reg, engine)
 	hb := NewHeartbeatRunner(cfg.StorageDir, sm, engine, tg)
 	go hb.CheckAndRun()
-
-	if *resume {
-		resumeBackgroundSessions(sm, engine, cfg.StorageDir)
-	}
 
 	handleSignals()
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"sync"
+	"time"
 )
 
 type EventType string
@@ -13,13 +14,14 @@ const (
 )
 
 const (
-	AuditInfo          = "info"
-	AuditLLMPrompt     = "llm_prompt"
-	AuditLLMResponse   = "llm_response"
-	AuditLLMChunk      = "llm_response_chunk"
-	AuditCmdResult     = "cmd_result"
-	AuditIntervention  = "intervention"
-	AuditStatus        = "status"
+	AuditLLMPrompt    = "llm_prompt"
+	AuditLLMResponse  = "llm_response"
+	AuditLLMChunk     = "llm_response_chunk"
+	AuditLLMThought   = "llm_thought"
+	AuditCmdResult    = "cmd_result"
+	AuditIntervention = "intervention"
+	AuditStatus       = "status"
+	AuditInfo         = "info"
 )
 
 type Event struct {
@@ -28,15 +30,21 @@ type Event struct {
 	Payload   interface{}
 }
 
+const (
+	maxEventHistory = 10
+)
+
 // EventBus distributes events to active transceivers (CLI, TG)
 type EventBus struct {
 	subs map[chan Event]bool
 	mu   sync.RWMutex
+	last []Event
 }
 
 func NewEventBus() *EventBus {
 	return &EventBus{
 		subs: make(map[chan Event]bool),
+		last: make([]Event, 0, maxEventHistory),
 	}
 }
 
@@ -45,6 +53,10 @@ func (eb *EventBus) Subscribe() chan Event {
 	defer eb.mu.Unlock()
 	ch := make(chan Event, 100)
 	eb.subs[ch] = true
+	// Replay last events
+	for _, e := range eb.last {
+		ch <- e
+	}
 	return ch
 }
 
@@ -56,12 +68,21 @@ func (eb *EventBus) Unsubscribe(ch chan Event) {
 }
 
 func (eb *EventBus) Publish(e Event) {
+	eb.mu.Lock()
+	// Update history
+	eb.last = append(eb.last, e)
+	if len(eb.last) > maxEventHistory {
+		eb.last = eb.last[1:]
+	}
+	eb.mu.Unlock()
+
 	eb.mu.RLock()
 	defer eb.mu.RUnlock()
 	for ch := range eb.subs {
 		select {
 		case ch <- e:
-		default: // non-blocking drop if channel is full
+		case <-time.After(10 * time.Millisecond):
+			// Drop if it still can't send after 10ms (prevents blocking publisher indefinitely)
 		}
 	}
 }

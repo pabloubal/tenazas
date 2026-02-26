@@ -114,9 +114,14 @@ Remember that all `verify_cmd` and `tool` commands run inside the session's **CW
 
 ---
 
-## 6. Deployment
+## 6. Deployment & CLI Commands
 
 1.  Create your skill folder in `~/.tenazas/skills/` (or the local project `skills/`).
-2.  Run `tenazas cli`.
-3.  Type `/skills` to see your new skill in the list.
-4.  Type `/run <skill_name>` to begin execution.
+2.  Run `tenazas cli` to start the interface.
+3.  Use the following commands to manage and run skills:
+
+- `/skills`: List all available skills and their status.
+- `/skills toggle <name>`: Enable or disable a specific skill.
+- `/run <skill_name>`: Start a skill execution in the current session.
+- `/intervene <retry|proceed_to_fail|abort>`: Manually resolve a state that requires human intervention.
+- `/help`: Show a list of all available commands.

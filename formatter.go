@@ -16,6 +16,8 @@ func (f *AnsiFormatter) Format(e AuditEntry) string {
 		return fmt.Sprintf("\x1b[33m🟡 PROMPT (%s):\x1b[0m\x0a\x1b[90m%s\x1b[0m", e.Source, e.Content)
 	case AuditLLMResponse:
 		return fmt.Sprintf("\x1b[32;1m🟢 RESPONSE:\x1b[0m\x0a%s", e.Content)
+	case AuditLLMThought:
+		return fmt.Sprintf("\x1b[2m💭 %s\x1b[0m", e.Content)
 	case AuditCmdResult:
 		color, icon := "32", "✅"
 		if !strings.Contains(e.Content, "Exit Code: 0") {
@@ -56,6 +58,8 @@ func (f *HtmlFormatter) Format(e AuditEntry) string {
 		return "⚠️ <b>Intervention Required</b>\x0a" + content
 	case AuditStatus:
 		return "🟣 <b>" + content + "</b>"
+	case AuditLLMThought:
+		return "💭 <i>" + content + "</i>"
 	default:
 		return "<b>[" + e.Type + "]</b> " + content
 	}

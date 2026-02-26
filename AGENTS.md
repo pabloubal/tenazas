@@ -25,7 +25,8 @@ graph TD
     end
 
     subgraph Persistence ["Storage (~/.tenazas)"]
-        SessFiles[(sessions/*.json)]
+        SessFiles[(sessions/Project-Slug/*.json)]
+        TaskFiles[(tasks/Project-Slug/*.md)]
         RegFile[(registry.json)]
         LockFile[(.registry.lock)]
     end
@@ -47,7 +48,7 @@ graph TD
 ### `session.go` (The State)
 Manages the lifecycle of a session.
 - **Data Model**: Stores Tenazas UUID, the native `gemini_sid`, the `cwd` (anchor path), and the session `title`.
-- **Persistence**: Atomic JSON writes to `~/.tenazas/sessions/`.
+- **Persistence**: Atomic JSON writes to project-specific subdirectories in `~/.tenazas/sessions/`.
 - **Pagination**: Supports high-performance directory scanning and sorting for the `/resume` interface.
 
 ### `executor.go` (The Bridge)
@@ -81,7 +82,8 @@ Provides the terminal interface.
 - `registry.json`: Instance-to-session mapping.
 - `.registry.lock`: System-level lock file.
 - `tenazas.log`: Combined `stderr` from Gemini processes.
-- `sessions/`: UUID-named JSON files containing session metadata.
+- `sessions/`: Project-specific subdirectories containing UUID-named JSON files.
+- `tasks/`: Project-specific subdirectories containing task Markdown files.
 
 ### Configuration
 Config is loaded via `~/.tenazas/config.json`, then overridden by Environment Variables:

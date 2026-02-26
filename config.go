@@ -72,6 +72,7 @@ func loadConfig() (*Config, error) {
 
 	os.MkdirAll(cfg.StorageDir, 0755)
 	os.MkdirAll(filepath.Join(cfg.StorageDir, "sessions"), 0755)
+	os.MkdirAll(filepath.Join(cfg.StorageDir, "tasks"), 0755)
 	os.MkdirAll(filepath.Join(cfg.StorageDir, "skills"), 0755)
 	os.MkdirAll(filepath.Join(cfg.StorageDir, "heartbeats"), 0755)
 

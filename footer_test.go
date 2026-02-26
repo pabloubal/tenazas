@@ -15,20 +15,20 @@ func TestFormatFooter(t *testing.T) {
 		mode       string
 		yolo       bool
 		skillCount int
-		sessionID  string
+		hint       string
 		expected   string
 	}{
-		{ApprovalModePlan, false, 5, "1234567890abcdef", "[PLAN] | Skills: 5 | Session: ...90abcdef"},
-		{ApprovalModeAutoEdit, false, 12, "1234567890abcdef", "[AUTO_EDIT] | Skills: 12 | Session: ...90abcdef"},
-		{ApprovalModePlan, true, 3, "1234567890abcdef", "[YOLO] | Skills: 3 | Session: ...90abcdef"},
-		{"", false, 0, "1234567890abcdef", "[PLAN] | Skills: 0 | Session: ...90abcdef"},
+		{ApprovalModePlan, false, 5, "Searching...", "[PLAN] | Skills: 5 | Thought: Searching..."},
+		{ApprovalModeAutoEdit, false, 12, "Processing files", "[AUTO_EDIT] | Skills: 12 | Thought: Processing files"},
+		{ApprovalModePlan, true, 3, "Applying fix", "[YOLO] | Skills: 3 | Thought: Applying fix"},
+		{"", false, 0, "", "[PLAN] | Skills: 0 | Thought: "},
 	}
 
 	for _, tc := range cases {
-		// This will fail to compile if formatFooter is not defined
-		got := formatFooter(tc.mode, tc.yolo, tc.skillCount, tc.sessionID)
+		// This will fail to compile if formatFooter signature is not updated
+		got := formatFooter(tc.mode, tc.yolo, tc.skillCount, tc.hint)
 		if got != tc.expected {
-			t.Errorf("formatFooter(%s, %v, %d, %s) = %q, want %q", tc.mode, tc.yolo, tc.skillCount, tc.sessionID, got, tc.expected)
+			t.Errorf("formatFooter(%s, %v, %d, %s) = %q, want %q", tc.mode, tc.yolo, tc.skillCount, tc.hint, got, tc.expected)
 		}
 	}
 }
@@ -84,10 +84,9 @@ func TestDrawFooterSequences(t *testing.T) {
 		ApprovalMode: ApprovalModePlan,
 	}
 
-	// This will fail to compile if drawFooter is not defined
-	// We also need a way to pass mock skill count or terminal size if it's hardcoded to use real ones.
-	// For TDD, we might need to refactor CLI to accept a "TerminalProvider" interface if we want to be pure.
-	// But let's follow the implementation plan which says it uses getTerminalSize directly.
+	// This will fail to compile if lastThought is not added to CLI struct
+	cli.lastThought = "Testing footer"
+	cli.skillCount = 5
 	
 	cli.drawFooter(sess)
 	
@@ -107,6 +106,9 @@ func TestDrawFooterSequences(t *testing.T) {
 	}
 	if !strings.Contains(got, "[PLAN]") {
 		t.Errorf("output missing mode [PLAN]")
+	}
+	if !strings.Contains(got, "Thought: Testing footer") {
+		t.Errorf("output missing thought hint")
 	}
 }
 

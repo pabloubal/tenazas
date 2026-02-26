@@ -234,6 +234,46 @@ func TestEngineResolveInstruction(t *testing.T) {
 	}
 }
 
+func TestThoughtParser(t *testing.T) {
+	var thoughts, text string
+	parser := &thoughtParser{
+		onThought: func(s string) { thoughts += s },
+		onText:    func(s string) { text += s },
+	}
+
+	// Normal case
+	parser.parse("Hello <thought>thinking</thought> World")
+	if text != "Hello  World" || thoughts != "thinking" {
+		t.Errorf("expected 'Hello  World' and 'thinking', got %q and %q", text, thoughts)
+	}
+
+	// Reset
+	thoughts, text = "", ""
+	parser = &thoughtParser{
+		onThought: func(s string) { thoughts += s },
+		onText:    func(s string) { text += s },
+	}
+
+	// Split across chunks
+	parser.parse("Part 1 <tho")
+	parser.parse("ught>Hidden</thou")
+	parser.parse("ght> Part 2")
+	if text != "Part 1  Part 2" || thoughts != "Hidden" {
+		t.Errorf("expected 'Part 1  Part 2' and 'Hidden', got %q and %q", text, thoughts)
+	}
+
+	// Multiple thoughts
+	thoughts, text = "", ""
+	parser = &thoughtParser{
+		onThought: func(s string) { thoughts += s },
+		onText:    func(s string) { text += s },
+	}
+	parser.parse("<thought>1</thought>A<thought>2</thought>B")
+	if text != "AB" || thoughts != "12" {
+		t.Errorf("expected 'AB' and '12', got %q and %q", text, thoughts)
+	}
+}
+
 func TestEngineExecutePrompt(t *testing.T) {
 	storageDir, _ := os.MkdirTemp("", "tenazas-engine-prompt-*")
 	defer os.RemoveAll(storageDir)
