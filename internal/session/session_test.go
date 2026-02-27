@@ -1,0 +1,192 @@
+package session
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"tenazas/internal/events"
+	"tenazas/internal/models"
+)
+
+func TestSessionManagerSaveAndLoad(t *testing.T) {
+	storageDir, err := os.MkdirTemp("", "tenazas-test-storage-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(storageDir)
+
+	sm := NewManager(storageDir)
+	cwd, _ := os.Getwd()
+
+	sess := &models.Session{
+		ID:        "test-session-123",
+		CWD:       cwd,
+		Title:     "Test Session",
+		RoleCache: make(map[string]string),
+	}
+
+	// Test Save
+	err = sm.Save(sess)
+	if err != nil {
+		t.Fatalf("failed to save session: %v", err)
+	}
+
+	// Verify directory creation
+	slug := strings.ReplaceAll(cwd, "/", "-")
+	if strings.HasPrefix(slug, "-") {
+		slug = slug[1:]
+	}
+	expectedDir := filepath.Join(storageDir, "sessions", slug)
+	if _, err := os.Stat(expectedDir); os.IsNotExist(err) {
+		t.Errorf("expected directory %s to exist", expectedDir)
+	}
+
+	// Test Load
+	loaded, err := sm.Load("test-session-123")
+	if err != nil {
+		t.Fatalf("failed to load session: %v", err)
+	}
+
+	if loaded.ID != sess.ID || loaded.Title != sess.Title {
+		t.Errorf("loaded session does not match original: got %v, want %v", loaded, sess)
+	}
+}
+
+func TestSessionManagerListAndAudit(t *testing.T) {
+	storageDir, err := os.MkdirTemp("", "tenazas-test-list-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(storageDir)
+
+	sm := NewManager(storageDir)
+	cwd, _ := os.Getwd()
+
+	s1 := &models.Session{ID: "s1", CWD: cwd, Title: "S1"}
+	s2 := &models.Session{ID: "s2", CWD: cwd, Title: "S2"}
+
+	sm.Save(s1)
+	time.Sleep(10 * time.Millisecond) // Ensure different LastUpdated
+	sm.Save(s2)
+
+	// Test List
+	list, total, err := sm.List(0, 10)
+	if err != nil {
+		t.Fatalf("failed to list sessions: %v", err)
+	}
+	if total != 2 {
+		t.Errorf("expected 2 sessions, got %d", total)
+	}
+	// Check sorting (latest first)
+	if list[0].ID != "s2" {
+		t.Errorf("expected latest session to be s2, got %s", list[0].ID)
+	}
+
+	// Test Audit
+	entry := events.AuditEntry{Type: "info", Source: "test", Content: "hello"}
+	err = sm.AppendAudit(s1, entry)
+	if err != nil {
+		t.Fatalf("failed to append audit: %v", err)
+	}
+
+	audits, err := sm.GetLastAudit(s1, 1)
+	if err != nil {
+		t.Fatalf("failed to get last audit: %v", err)
+	}
+	if len(audits) != 1 || audits[0].Content != "hello" {
+		t.Errorf("expected audit content 'hello', got %v", audits)
+	}
+}
+
+func TestSessionManagerGetLatest(t *testing.T) {
+	storageDir, _ := os.MkdirTemp("", "tenazas-test-latest-*")
+	defer os.RemoveAll(storageDir)
+
+	sm := NewManager(storageDir)
+	cwd, _ := os.Getwd()
+
+	s1 := &models.Session{ID: "old", CWD: cwd, LastUpdated: time.Now().Add(-1 * time.Hour)}
+	s2 := &models.Session{ID: "new", CWD: cwd, LastUpdated: time.Now()}
+
+	sm.Save(s1)
+	sm.Save(s2)
+
+	latest, err := sm.GetLatest()
+	if err != nil {
+		t.Fatalf("GetLatest failed: %v", err)
+	}
+
+	if latest.ID != "new" {
+		t.Errorf("expected latest session to be 'new', got %s", latest.ID)
+	}
+}
+
+func TestSessionManagerArchive(t *testing.T) {
+	storageDir, _ := os.MkdirTemp("", "tenazas-test-archive-*")
+	defer os.RemoveAll(storageDir)
+
+	sm := NewManager(storageDir)
+	cwd, _ := os.Getwd()
+
+	s1 := &models.Session{ID: "sess-1", CWD: cwd, Title: "Active Session"}
+	s2 := &models.Session{ID: "sess-2", CWD: cwd, Title: "Archived Session"}
+
+	sm.Save(s1)
+	sm.Save(s2)
+
+	// Test Archive
+	err := sm.Archive("sess-2")
+	if err != nil {
+		t.Fatalf("failed to archive session: %v", err)
+	}
+
+	// Verify archived session is NOT in List
+	list, total, err := sm.List(0, 10)
+	if err != nil {
+		t.Fatalf("failed to list sessions: %v", err)
+	}
+	if total != 1 {
+		t.Errorf("expected 1 session in list after archiving, got %d", total)
+	}
+	if list[0].ID != "sess-1" {
+		t.Errorf("expected sess-1 in list, got %s", list[0].ID)
+	}
+
+	// Verify archived session can still be Load-ed
+	loaded, err := sm.Load("sess-2")
+	if err != nil {
+		t.Fatalf("failed to load archived session: %v", err)
+	}
+	if !loaded.Archived {
+		t.Errorf("expected loaded session to have Archived=true")
+	}
+}
+
+func TestSessionManagerRename(t *testing.T) {
+	storageDir, _ := os.MkdirTemp("", "tenazas-test-rename-*")
+	defer os.RemoveAll(storageDir)
+
+	sm := NewManager(storageDir)
+	cwd, _ := os.Getwd()
+
+	s1 := &models.Session{ID: "sess-1", CWD: cwd, Title: "Old Title"}
+	sm.Save(s1)
+
+	// Test Rename
+	err := sm.Rename("sess-1", "New Title")
+	if err != nil {
+		t.Fatalf("failed to rename session: %v", err)
+	}
+
+	// Verify Title change via Load
+	loaded, err := sm.Load("sess-1")
+	if err != nil {
+		t.Fatalf("failed to load session: %v", err)
+	}
+	if loaded.Title != "New Title" {
+		t.Errorf("expected title 'New Title', got %s", loaded.Title)
+	}
+}

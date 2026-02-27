@@ -8,74 +8,159 @@ Tenazas is a high-performance, zero-dependency Go gateway for the `gemini` CLI. 
 - **Environment-Anchored**: Every session is tied to a specific local directory (`CWD`).
 - **Audit-Ready**: Minimal codebase (~2,000 LOC) designed for high security and transparency.
 
-## 2. Architecture Overview
+## 2. Project Structure
+
+```
+cmd/tenazas/main.go              ← Thin entrypoint, wires all packages
+internal/
+  config/config.go               ← Config struct, Load(), env var overrides
+  events/events.go               ← EventBus, AuditEntry, TaskStatusPayload, constants
+  models/models.go               ← Session, SkillGraph, StateDef, Heartbeat, EngineInterface
+  storage/storage.go             ← Atomic JSON I/O, Slugify, path resolution
+  session/session.go             ← Session CRUD, audit log, skill registry, listing
+  registry/registry.go           ← Flock-based instance-to-session mapping
+  executor/executor.go           ← Gemini subprocess, JSONL parsing
+  engine/
+    engine.go                    ← Skill execution loop, intervention, prompt building
+    thought_parser.go            ← Chain-of-thought stream parser
+  skill/skill.go                 ← Skill loading and listing
+  task/
+    task.go                      ← Task model, CRUD, cycle detection, archival
+    work.go                      ← `tenazas work` CLI subcommand
+  heartbeat/heartbeat.go         ← Background task runner, Notifier interface
+  telegram/telegram.go           ← Telegram bot (polling, streaming, callbacks)
+  cli/
+    cli.go                       ← Terminal REPL, branding, drawer, completions
+    terminal_darwin.go           ← macOS raw mode / terminal size
+    terminal_linux.go            ← Linux raw mode / terminal size
+  formatter/formatter.go         ← AnsiFormatter (CLI), HtmlFormatter (Telegram)
+```
+
+## 3. Architecture Overview
 
 ```mermaid
 graph TD
-    subgraph Interfaces ["User Interfaces"]
-        CLI[CLI REPL: cli.go]
-        TG[Telegram Bot: telegram.go]
+    subgraph Entrypoint
+        Main[cmd/tenazas/main.go]
     end
 
-    subgraph Core ["Orchestrator"]
-        Registry[Registry: registry.go]
-        SessMgr[Session Manager: session.go]
-        Executor[Gemini Executor: executor.go]
-        Config[Config Loader: config.go]
+    subgraph Interfaces ["User Interfaces"]
+        CLI[cli: Terminal REPL]
+        TG[telegram: Bot Gateway]
+    end
+
+    subgraph Core ["Orchestration"]
+        Engine[engine: Skill Runner]
+        Session[session: State Manager]
+        Registry[registry: Process Sync]
+        HB[heartbeat: Background Runner]
+    end
+
+    subgraph Foundation ["Foundation"]
+        Events[events: EventBus + Audit]
+        Models[models: Domain Types]
+        Storage[storage: Atomic JSON]
+        Executor[executor: Gemini Bridge]
+        Config[config: Settings]
     end
 
     subgraph Persistence ["Storage (~/.tenazas)"]
-        SessFiles[(sessions/Project-Slug/*.json)]
-        TaskFiles[(tasks/Project-Slug/*.md)]
+        SessFiles[(sessions/)]
+        TaskFiles[(tasks/)]
         RegFile[(registry.json)]
-        LockFile[(.registry.lock)]
     end
 
-    subgraph Backend ["Reasoning Engine"]
-        GeminiCLI[gemini CLI subprocess]
-    end
-
-    CLI <--> Registry
-    TG <--> Registry
-    Registry <--> SessMgr
-    SessMgr <--> SessFiles
-    Executor <--> Backend
-    Interfaces <--> Executor
+    Main --> CLI
+    Main --> TG
+    Main --> Engine
+    Main --> HB
+    CLI --> Engine
+    CLI --> Session
+    CLI --> Registry
+    TG --> Engine
+    TG --> Session
+    TG --> Registry
+    Engine --> Session
+    Engine --> Executor
+    Engine --> Events
+    HB --> Engine
+    HB --> Session
+    Session --> Storage
+    Session --> Events
+    Session --> Models
+    Registry --> Storage
+    Storage --> SessFiles
+    Storage --> TaskFiles
+    Storage --> RegFile
 ```
 
-## 3. Component Deep Dive
+## 4. Dependency Rules
 
-### `session.go` (The State)
+Packages follow a strict layered dependency graph. **No circular imports.**
+
+```
+Layer 0 (no internal deps):  events, models, storage, executor, config
+Layer 1 (foundation deps):   formatter → events
+                              registry → storage
+                              skill → config, models, storage
+                              task → storage
+Layer 2 (mid-tier):          session → events, models, skill, storage
+Layer 3 (orchestration):     engine → events, executor, models, session
+Layer 4 (top-tier):          heartbeat → engine, events, models, session, storage, task
+                              telegram → events, formatter, models, registry, session
+                              cli → engine, events, formatter, models, registry, session, skill
+Layer 5 (entrypoint):        cmd/tenazas → all of the above
+```
+
+**Circular dependency breakers:**
+- `heartbeat` uses a `Notifier` interface (not `*telegram.Telegram` directly)
+- `models.EngineInterface` allows telegram/cli/heartbeat to reference engine behavior without importing engine
+
+## 5. Component Deep Dive
+
+### `internal/session` (The State)
 Manages the lifecycle of a session.
 - **Data Model**: Stores Tenazas UUID, the native `gemini_sid`, the `cwd` (anchor path), and the session `title`.
 - **Persistence**: Atomic JSON writes to project-specific subdirectories in `~/.tenazas/sessions/`.
 - **Pagination**: Supports high-performance directory scanning and sorting for the `/resume` interface.
 
-### `executor.go` (The Bridge)
+### `internal/executor` (The Bridge)
 Orchestrates the `gemini` CLI subprocess.
 - **JSONL Parsing**: Reads the `--output-format json-stream` from `stdout`.
 - **Session Continuity**: Uses `--resume <GeminiSID>` for follow-up prompts.
 - **CWD Injection**: Strictly sets `cmd.Dir` to the session's anchored path.
 - **Logging**: Captures `stderr` to `tenazas.log` for background diagnostics.
 
-### `registry.go` (Multi-Process Sync)
+### `internal/registry` (Multi-Process Sync)
 Ensures multiple CLIs and the Telegram daemon don't collide.
 - **Flock Logic**: Uses `syscall.Flock` (Advisory Locking) on `.registry.lock`.
 - **Mapping**: Pairs an `InstanceID` (e.g., `cli-PID` or `tg-ChatID`) to a `SessionID`.
 - **Process Isolation**: Allows multiple terminal windows to maintain independent active sessions.
 
-### `telegram.go` (Zero-SDK Gateway)
+### `internal/telegram` (Zero-SDK Gateway)
 A raw HTTP implementation of the Telegram Bot API.
 - **Long Polling**: Uses `getUpdates` with a 30s timeout.
 - **Streaming Buffer**: Accumulates Gemini chunks and updates Telegram via `editMessageText` every `UpdateInterval` (default 500ms) to bypass rate limits.
 - **Security**: Whitelist-based access via `AllowedUserIDs`.
 
-### `cli.go` (The Local REPL)
+### `internal/cli` (The Local REPL)
 Provides the terminal interface.
 - **Streaming**: Real-time `fmt.Print` of Gemini chunks.
 - **Menu**: Interactive paginated list for session resumption.
+- **Immersive Mode**: Split-pane with thought drawer and footer bar.
 
-## 4. Operational Details
+### `internal/engine` (The Brain)
+Drives the skill execution loop.
+- **Intervention System**: Pause/retry/abort for failed tool calls.
+- **Thought Parser**: Extracts chain-of-thought from streaming responses.
+- **Max Loops**: Configurable safety limit on autonomous iterations.
+
+### `internal/heartbeat` (Background Runner)
+Periodically scans for pending heartbeat files and runs skills automatically.
+- **Decoupled**: Uses `Notifier` interface instead of concrete Telegram dependency.
+- **Task Lifecycle**: Emits `TaskState` events (started/blocked/completed/failed).
+
+## 6. Operational Details
 
 ### Storage Layout (`~/.tenazas`)
 - `config.json`: Global settings.
@@ -98,8 +183,10 @@ Config is loaded via `~/.tenazas/config.json`, then overridden by Environment Va
 4. **Execution**: The bot spawns `gemini --resume <SID>` with `cmd.Dir = "~/projects/api"`.
 5. **Result**: Seamless continuity across platforms.
 
-## 5. Development Guidelines
+## 7. Development Guidelines
 - **No Heavy Imports**: Keep the binary lean. Avoid external SDKs.
 - **Lock First**: Always wrap Registry or Session writes in the locking logic.
 - **Path Safety**: Always use `filepath.Join` and validate paths before `os.MkdirAll`.
 - **CLI Compatibility**: Maintain parity with the `gemini` CLI's JSONL schema (`type`, `session_id`, `content`, `delta`).
+- **Respect Layer Boundaries**: Never import a higher-layer package from a lower-layer one.
+- **Tests Co-located**: Every `_test.go` file lives in the same directory as the code it tests.

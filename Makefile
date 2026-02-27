@@ -4,7 +4,7 @@ BINARY_NAME=tenazas
 
 build:
 	mkdir -p bin
-	go build -o bin/$(BINARY_NAME) .
+	go build -o bin/$(BINARY_NAME) ./cmd/tenazas/
 
 test:
 	go test -v ./...

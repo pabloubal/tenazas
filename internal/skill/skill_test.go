@@ -1,0 +1,57 @@
+package skill
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"tenazas/internal/models"
+	"tenazas/internal/storage"
+)
+
+func TestSkillLoading(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "tenazas-skill-test-*")
+	defer os.RemoveAll(tmpDir)
+
+	skillsDir := filepath.Join(tmpDir, "skills")
+	os.MkdirAll(skillsDir, 0755)
+
+	// Valid isolated skill: skills/unique-test-skill/skill.json
+	skillDir := filepath.Join(skillsDir, "unique-test-skill")
+	os.MkdirAll(skillDir, 0755)
+
+	skill := models.SkillGraph{
+		Name: "unique-test-skill",
+		States: map[string]models.StateDef{
+			"start": {Type: "end"},
+		},
+	}
+	data, _ := json.Marshal(skill)
+	os.WriteFile(filepath.Join(skillDir, "skill.json"), data, 0644)
+
+	// Test Load
+	loaded, err := Load(storage.NewStorage(tmpDir), "unique-test-skill", []string{"unique-test-skill"})
+	if err != nil {
+		t.Fatalf("failed to load skill: %v", err)
+	}
+	if loaded.Name != "unique-test-skill" {
+		t.Errorf("expected skill name 'unique-test-skill', got %s", loaded.Name)
+	}
+
+	// Test List
+	list, err := List(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to list skills: %v", err)
+	}
+	found := false
+	for _, s := range list {
+		if s == "unique-test-skill" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected to find 'unique-test-skill' in %v", list)
+	}
+}
