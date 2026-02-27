@@ -1,6 +1,15 @@
 # Tenazas 🦀
 
-**Tenazas** (Spanish for "Pincers") is a high-performance, zero-dependency Go gateway for the `gemini` CLI. It bridges your local terminal with Telegram, providing a stateful, directory-aware reasoning environment that follows you from your desk to your phone.
+<p align="center">
+    <a href="https://www.youtube.com/watch?v=eL2DgQt7ifw">
+      <picture>
+          <source media="(prefers-color-scheme: light)" srcset="./assets/tenazas.png">
+          <img src="./assets/tenazas.png" alt="Your clawdy friend" width="500">
+      </picture>
+    </a>
+</p>
+
+**Tenazas** (Spanish for "Pincers" or "Claws") is a high-performance, zero-dependency Go gateway for the `gemini` CLI. It bridges your local terminal with Telegram, providing a stateful, directory-aware reasoning environment that follows you from your desk to your phone.
 
 ## Features
 
@@ -19,11 +28,13 @@
 ## Installation
 
 ### Prerequisites
+
 1.  **Go 1.21+** installed.
 2.  **Gemini CLI** installed and available in your `PATH`.
 3.  A **Telegram Bot Token** (from [@BotFather](https://t.me/botfather)).
 
 ### Build
+
 ```bash
 git clone https://github.com/youruser/tenazas
 cd tenazas
@@ -45,21 +56,24 @@ Create `~/.tenazas/config.json`:
 }
 ```
 
-*You can also use environment variables: `TENAZAS_TG_TOKEN` and `TENAZAS_ALLOWED_IDS` (comma-separated).*
+_You can also use environment variables: `TENAZAS_TG_TOKEN` and `TENAZAS_ALLOWED_IDS` (comma-separated)._
 
 ## Usage
 
 Tenazas now uses a subcommand structure to separate the local interface from the gateway server.
 
 ### CLI (Local Interface)
+
 - **Start New Session**: `./tenazas cli` (or just `./tenazas`). This anchors the session to your current directory and creates a `.tenazas` folder for local data.
 - **Resume Session**: `./tenazas cli --resume` (presents a paginated list of sessions).
 
 ### Server (Telegram Gateway)
+
 - **Start Server**: `./tenazas server`
 - This runs the Telegram polling loop as a standalone process. It requires a valid `telegram_token` in your configuration.
 
 ### Telegram Interaction
+
 - **Chatting**: Send a message to your bot. It will automatically attach to your **most recently active** session.
 - **Multimodal**: Send an image with an optional caption. The image is saved to the session's local `.tenazas` directory and analyzed by Gemini.
 - **Switch/Resume**: Send `/resume` to see a list of sessions and pick one.
@@ -72,6 +86,7 @@ Tenazas now uses a subcommand structure to separate the local interface from the
 Tenazas includes an autonomous engine that can execute complex "Skills" defined as state graphs.
 
 ### CLI Commands
+
 - `/skills`: List all available skills and their status.
 - `/skills toggle <name>`: Enable or disable a specific skill.
 - `/run <skill>`: Start a skill execution in the current session.
@@ -79,9 +94,11 @@ Tenazas includes an autonomous engine that can execute complex "Skills" defined 
 - `/help`: Show a list of all available commands.
 
 ### Autonomous TDD Workflow
+
 The `tdd_feature_dev` skill follows a strict engineering lifecycle:
+
 1.  **Plan**: Gemini reads the issue and writes a technical plan to `plan.md`.
-2.  **Red Phase**: Gemini writes unit tests. Verification fails if the tests *pass* or fail to compile.
+2.  **Red Phase**: Gemini writes unit tests. Verification fails if the tests _pass_ or fail to compile.
 3.  **Green Phase**: Gemini writes the minimal implementation to make tests pass.
 4.  **Refactor**: Gemini cleans up the code without breaking the tests.
 5.  **Review**: A separate reviewer role inspects the code and provides feedback.
@@ -91,6 +108,7 @@ Tenazas ensures continuity by passing the full output (logs) of each phase to th
 ## How it Works
 
 Tenazas acts as a stateful proxy. It maintains a registry of "Instances" (PIDs and ChatIDs). When a prompt or image arrives, Tenazas:
+
 1.  Identifies the target session and its workspace (`CWD`).
 2.  Ensures a local `.tenazas` directory exists for the session.
 3.  Downloads any incoming images to that local directory.
@@ -99,4 +117,5 @@ Tenazas acts as a stateful proxy. It maintains a registry of "Instances" (PIDs a
 6.  Parses the JSONL stream and forwards the content chunks to the active interface.
 
 ## License
+
 MIT
