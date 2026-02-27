@@ -4,17 +4,36 @@ package client
 
 import "fmt"
 
+// Model tier constants used across all clients.
+const (
+	ModelTierHigh   = "high"
+	ModelTierMedium = "medium"
+	ModelTierLow    = "low"
+)
+
+// RunOptions holds all parameters for a single client invocation.
+type RunOptions struct {
+	NativeSID    string  // client-specific session ID for continuity
+	Prompt       string
+	CWD          string
+	ApprovalMode string  // Tenazas approval mode (PLAN, AUTO_EDIT, YOLO)
+	Yolo         bool    // shortcut: bypass all permissions
+	ModelTier    string  // "high", "medium", "low" — mapped per client
+	MaxBudgetUSD float64 // cost ceiling (0 = unlimited)
+}
+
 // Client is the strategy interface every coding-agent backend must implement.
 type Client interface {
 	// Name returns the client identifier (e.g. "gemini", "claude-code").
 	Name() string
 
 	// Run executes a prompt and streams results.
-	// nativeSID is the client-specific session ID for continuity.
 	// onChunk is called with each text chunk as it streams.
 	// onSessionID is called when the client provides its native session ID.
-	Run(nativeSID, prompt, cwd, approvalMode string, yolo bool,
-		onChunk func(string), onSessionID func(string)) (fullResponse string, err error)
+	Run(opts RunOptions, onChunk func(string), onSessionID func(string)) (fullResponse string, err error)
+
+	// SetModels configures the tier-to-model mapping for this client.
+	SetModels(models map[string]string)
 }
 
 // registry maps client names to constructor functions.

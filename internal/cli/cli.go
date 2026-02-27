@@ -200,18 +200,16 @@ func (c *CLI) Run(resume bool) error {
 	signal.Notify(sigChan, syscall.SIGWINCH)
 	go func() {
 		for range sigChan {
-			c.setupTerminal()
-			c.mu.Lock()
-			isImm := c.IsImmersive
-			c.mu.Unlock()
-			if isImm {
-				c.drawDrawer()
-				c.renderLine()
-			}
+			var sb strings.Builder
+			c.writeAtomic(&sb, func(sb *strings.Builder) {
+				c.setupTerminalAtomic(sb)
+				c.drawDrawerAtomic(sb)
+				c.renderLineAtomic(sb)
+			})
 		}
 	}()
 
-	c.write("Commands: /run <skill>, /last <N>, /intervene <action>, /mode <plan|auto_edit|yolo>\n")
+	c.write("Commands: /run <skill>, /last <N>, /intervene <action>, /mode, /budget, /help\n")
 
 	if resume && sess.SkillName != "" {
 		c.resumeSkill(sess)
@@ -446,7 +444,7 @@ func (c *CLI) getCompletions(line string) []string {
 		return []string{}
 	}
 
-	commands := []string{"/run", "/last", "/intervene", "/skills", "/mode", "/help"}
+	commands := []string{"/run", "/last", "/intervene", "/skills", "/mode", "/budget", "/help"}
 
 	if strings.HasPrefix(line, "/run ") {
 		prefix := strings.TrimPrefix(line, "/run ")
@@ -644,6 +642,8 @@ func (c *CLI) handleCommand(sess *models.Session, text string) {
 		c.handleSkills(parts[1:])
 	case "/mode":
 		c.handleMode(sess, parts[1:])
+	case "/budget":
+		c.handleBudget(sess, parts[1:])
 	case "/help":
 		c.handleHelp()
 	default:
@@ -780,16 +780,51 @@ func (c *CLI) handleLast(sess *models.Session, n int) {
 	c.write(output.String())
 }
 
-func FormatFooter(mode string, yolo bool, skillCount int, hint string) string {
-	displayMode := mode
-	if yolo {
+// FooterData holds all values rendered in the status bar.
+type FooterData struct {
+	Mode         string
+	Yolo         bool
+	ModelTier    string
+	MaxBudgetUSD float64
+	SkillCount   int
+	CWD          string
+	Hint         string
+}
+
+func FormatFooter(d FooterData) string {
+	displayMode := d.Mode
+	if d.Yolo {
 		displayMode = models.ApprovalModeYolo
 	} else if displayMode == "" {
 		displayMode = models.ApprovalModePlan
 	}
 
-	condensedHint := strings.Join(strings.Fields(hint), " ")
-	return fmt.Sprintf("[%s] | Skills: %d | Thought: %s", displayMode, skillCount, condensedHint)
+	var parts []string
+	parts = append(parts, "["+displayMode+"]")
+
+	if d.ModelTier != "" {
+		parts = append(parts, "Model: "+d.ModelTier)
+	}
+	if d.MaxBudgetUSD > 0 {
+		parts = append(parts, fmt.Sprintf("Budget: $%.2f", d.MaxBudgetUSD))
+	}
+
+	parts = append(parts, fmt.Sprintf("Skills: %d", d.SkillCount))
+
+	if d.CWD != "" {
+		dir := d.CWD
+		if home, err := os.UserHomeDir(); err == nil {
+			dir = strings.Replace(dir, home, "~", 1)
+		}
+		parts = append(parts, "CWD: "+dir)
+	}
+
+	condensedHint := strings.Join(strings.Fields(d.Hint), " ")
+	if condensedHint != "" {
+		parts = append(parts, "Thought: "+condensedHint)
+	}
+
+	return strings.Join(parts, " | ")
 }
 
 func (c *CLI) handleMode(sess *models.Session, args []string) {
@@ -798,6 +833,32 @@ func (c *CLI) handleMode(sess *models.Session, args []string) {
 		return
 	}
 	c.setApprovalMode(sess, args[0])
+}
+
+func (c *CLI) handleBudget(sess *models.Session, args []string) {
+	if len(args) == 0 {
+		if sess.MaxBudgetUSD <= 0 {
+			c.write("Budget: unlimited\n")
+		} else {
+			c.write(fmt.Sprintf("Budget: $%.2f\n", sess.MaxBudgetUSD))
+		}
+		return
+	}
+	var amount float64
+	if _, err := fmt.Sscanf(args[0], "%f", &amount); err != nil || amount < 0 {
+		c.write("Invalid budget. Use: /budget <amount> (e.g. /budget 5.00, /budget 0 for unlimited)\n")
+		return
+	}
+	c.mu.Lock()
+	sess.MaxBudgetUSD = amount
+	c.persistSession(sess)
+	c.drawFooterLocked(sess)
+	c.mu.Unlock()
+	if amount <= 0 {
+		c.write("Budget set to unlimited.\n")
+	} else {
+		c.write(fmt.Sprintf("Budget set to $%.2f.\n", amount))
+	}
 }
 
 func (c *CLI) persistSession(sess *models.Session) {
@@ -814,6 +875,7 @@ func (c *CLI) handleHelp() {
 	fmt.Fprintln(&output, "  /intervene <action>  Resolve an intervention")
 	fmt.Fprintln(&output, "  /skills              List or toggle skills")
 	fmt.Fprintln(&output, "  /mode <mode>         Switch approval mode (plan, auto_edit, yolo)")
+	fmt.Fprintln(&output, "  /budget <amount>     Set session budget cap (0 = unlimited)")
 	fmt.Fprintln(&output, "  /help                Show this help")
 	fmt.Fprintln(&output, "\nModes: plan, auto_edit, yolo")
 	c.write(output.String())
@@ -825,10 +887,17 @@ func (c *CLI) drawFooterAtomic(sb *strings.Builder, sess *models.Session) {
 	}
 	rows, cols := c.getTermSize()
 
-	hint := c.lastThought
-	skillCount := c.skillCount
+	d := FooterData{
+		Mode:         sess.ApprovalMode,
+		Yolo:         sess.Yolo,
+		ModelTier:    sess.ModelTier,
+		MaxBudgetUSD: sess.MaxBudgetUSD,
+		SkillCount:   c.skillCount,
+		CWD:          sess.CWD,
+		Hint:         c.lastThought,
+	}
 
-	footer := FormatFooter(sess.ApprovalMode, sess.Yolo, skillCount, hint)
+	footer := FormatFooter(d)
 
 	if len(footer) > cols {
 		footer = footer[:cols]

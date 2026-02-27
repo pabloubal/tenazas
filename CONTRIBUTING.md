@@ -65,20 +65,26 @@ To add support for a new coding-agent CLI:
 1. **Create `internal/client/<name>.go`** implementing the `client.Client` interface:
    ```go
    type Client interface {
-       Run(ctx context.Context, cwd string, sessionID string, prompt string, skilledPrompt string, onChunk func(Chunk)) error
+       Name() string
+       Run(opts RunOptions, onChunk func(string), onSessionID func(string)) (string, error)
+       SetModels(models map[string]string)
    }
    ```
-   - `ctx`: Cancellation context for the subprocess.
-   - `cwd`: Working directory to set as `cmd.Dir`.
-   - `sessionID`: Native session ID for `--resume` (empty on first run).
-   - `prompt`: The raw user prompt.
-   - `skilledPrompt`: The prompt enriched with skill context by the engine.
-   - `onChunk`: Callback invoked for each parsed output chunk; normalize agent output into `Chunk{Type, SessionID, Content, Delta}`.
+   - `RunOptions` fields:
+     - `NativeSID`: Native session ID for `--resume`/`--continue` (empty on first run).
+     - `Prompt`: The user or skill prompt.
+     - `CWD`: Working directory to set as `cmd.Dir`.
+     - `ApprovalMode`: Tenazas mode (`PLAN`, `AUTO_EDIT`, `YOLO`) — map to your agent's flags internally.
+     - `Yolo`: Shortcut for full auto-approval.
+     - `ModelTier`: Generic tier (`high`, `medium`, `low`) — resolve via the `models` map from `SetModels()`.
+     - `MaxBudgetUSD`: Cost ceiling (0 = unlimited) — pass to agent if supported, skip silently otherwise.
+   - `onChunk`: Callback invoked for each parsed content chunk.
+   - `onSessionID`: Callback invoked when the agent returns its native session ID.
 
 2. **Add an `init()` function** that registers the client with the global registry:
    ```go
    func init() {
-       Register("<name>", func() Client { return &MyClient{} })
+       Register("<name>", func(binPath, logPath string) Client { return &MyClient{binPath: binPath, logPath: logPath} })
    }
    ```
 
@@ -88,7 +94,17 @@ To add support for a new coding-agent CLI:
    {"<name>", "<binary-name>"}
    ```
 
-4. **Test** with:
+4. **Add model tier defaults** in the onboarding wizard or document them so users can configure:
+   ```json
+   {
+     "<name>": {
+       "bin_path": "/usr/local/bin/<binary>",
+       "models": { "high": "<strongest-model>", "medium": "<default-model>", "low": "<cheapest-model>" }
+     }
+   }
+   ```
+
+5. **Test** with:
    ```bash
    go test ./internal/client/
    ```
@@ -98,7 +114,8 @@ To add support for a new coding-agent CLI:
 ### New command in CLI
 1. Add the handler in `internal/cli/cli.go` → `handleCommand()` switch
 2. Add tab-completion in `getCompletions()`
-3. Write tests in `internal/cli/`
+3. Update `handleHelp()` output
+4. Write tests in `internal/cli/`
 
 ### New Telegram callback
 1. Add the handler function in `internal/telegram/telegram.go`
@@ -114,6 +131,20 @@ To add support for a new coding-agent CLI:
 1. Update `internal/skill/skill.go` for loading
 2. Update `internal/engine/engine.go` for execution
 3. Update `internal/models/models.go` if new fields are needed in `SkillGraph`
+
+### RunOptions and Execution Overrides
+
+The `RunOptions` struct centralizes all parameters passed to a client's `Run()` method. When adding new execution-level features:
+
+1. **Add the field to `RunOptions`** in `internal/client/client.go`
+2. **Handle it in each client's `buildArgs()`** — map to the agent's native flag, or skip silently if unsupported
+3. **Set the cascade in the engine** — `callLLM()` in `internal/engine/engine.go` builds `RunOptions` with override priority:
+   - **ModelTier**: `StateDef.ModelTier` > `Session.ModelTier` > none
+   - **MaxBudgetUSD**: `SkillGraph.MaxBudgetUSD` > `Session.MaxBudgetUSD` > unlimited (0)
+   - **ApprovalMode**: `StateDef.ApprovalMode` > `Session.ApprovalMode`
+4. **Add config support** if the feature needs user-configurable defaults (in `ClientConfig` or `Config`)
+5. **Add session persistence** if the value should survive session resume (in `models.Session`)
+6. **Expose via CLI command** if the user should be able to change it at runtime (e.g. `/budget`, `/mode`)
 
 ## Writing Tests
 

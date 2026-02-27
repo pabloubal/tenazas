@@ -28,12 +28,12 @@ func TestLoadConfig(t *testing.T) {
 		t.Errorf("expected storage dir %s, got %s", tmpDir, cfg.StorageDir)
 	}
 
-	if cfg.TelegramToken != "test-token" {
-		t.Errorf("expected token 'test-token', got %s", cfg.TelegramToken)
+	if cfg.Channel.Token != "test-token" {
+		t.Errorf("expected token 'test-token', got %s", cfg.Channel.Token)
 	}
 
-	if len(cfg.AllowedUserIDs) != 2 || cfg.AllowedUserIDs[0] != 123 || cfg.AllowedUserIDs[1] != 456 {
-		t.Errorf("expected allowed IDs [123, 456], got %v", cfg.AllowedUserIDs)
+	if len(cfg.Channel.AllowedUserIDs) != 2 || cfg.Channel.AllowedUserIDs[0] != 123 || cfg.Channel.AllowedUserIDs[1] != 456 {
+		t.Errorf("expected allowed IDs [123, 456], got %v", cfg.Channel.AllowedUserIDs)
 	}
 
 	// Verify directories created

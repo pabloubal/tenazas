@@ -28,6 +28,7 @@ type SkillGraph struct {
 	BaseDir      string              `json:"base_dir,omitempty"`
 	InitialState string              `json:"initial_state"`
 	MaxLoops     int                 `json:"max_loops"`
+	MaxBudgetUSD float64             `json:"max_budget_usd,omitempty"`
 	States       map[string]StateDef `json:"states"`
 }
 
@@ -44,6 +45,7 @@ type StateDef struct {
 	OnFailRoute   string `json:"on_fail_route,omitempty"`
 	Next          string `json:"next,omitempty"`
 	ApprovalMode  string `json:"approval_mode,omitempty"`
+	ModelTier     string `json:"model_tier,omitempty"`
 	Command       string `json:"command,omitempty"`
 	IsTerminal    bool   `json:"is_terminal,omitempty"`
 }
@@ -65,6 +67,8 @@ type Session struct {
 	Yolo                bool              `json:"yolo"`
 	Archived            bool              `json:"archived,omitempty"`
 	ApprovalMode        string            `json:"approval_mode,omitempty"`
+	ModelTier           string            `json:"model_tier,omitempty"`
+	MaxBudgetUSD        float64           `json:"max_budget_usd,omitempty"`
 	MonitoringChatID    int64             `json:"monitoring_chat_id,omitempty"`
 	MonitoringMessageID int64             `json:"monitoring_message_id,omitempty"`
 	TaskID              string            `json:"task_id,omitempty"`

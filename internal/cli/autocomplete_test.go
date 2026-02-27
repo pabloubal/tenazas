@@ -48,7 +48,7 @@ func TestHandleHelp(t *testing.T) {
 	cli.handleHelp()
 	output := out.String()
 
-	expectedCommands := []string{"/run", "/last", "/intervene", "/skills", "/mode", "/help"}
+	expectedCommands := []string{"/run", "/last", "/intervene", "/skills", "/mode", "/budget", "/help"}
 	for _, cmd := range expectedCommands {
 		if !strings.Contains(output, cmd) {
 			t.Errorf("handleHelp output should contain command %q, got %q", cmd, output)
@@ -70,12 +70,13 @@ func TestGetCompletions(t *testing.T) {
 		input    string
 		expected []string
 	}{
-		{"/", []string{"/run", "/last", "/intervene", "/skills", "/mode", "/help"}},
+		{"/", []string{"/run", "/last", "/intervene", "/skills", "/mode", "/budget", "/help"}},
 		{"/r", []string{"/run"}},
 		{"/l", []string{"/last"}},
 		{"/i", []string{"/intervene"}},
 		{"/s", []string{"/skills"}},
 		{"/m", []string{"/mode"}},
+		{"/b", []string{"/budget"}},
 		{"/h", []string{"/help"}},
 		{"/notfound", []string{}},
 	}

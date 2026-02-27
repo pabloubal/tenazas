@@ -131,10 +131,16 @@ Manages the lifecycle of a session.
 
 ### `internal/client` (Agent Backends)
 Strategy pattern for pluggable coding-agent CLIs.
-- **Client Interface**: `Run(ctx, cwd, sessionID, prompt, skilledPrompt, onChunk)` — the contract every backend must implement.
-- **GeminiClient**: Wraps `gemini` CLI with `--output-format json-stream` and `--resume <SID>`.
-- **ClaudeCodeClient**: Wraps `claude` CLI with `--output-format stream-json` and `--resume <SID>`.
-- **Registry**: Clients self-register via `init()` + `Register(name, constructor)`. The factory `New(name)` returns the correct backend.
+- **Client Interface**: `Run(opts RunOptions, onChunk, onSessionID)` — the contract every backend must implement.
+- **RunOptions**: Unified struct carrying `NativeSID`, `Prompt`, `CWD`, `ApprovalMode`, `Yolo`, `ModelTier`, and `MaxBudgetUSD`. Eliminates per-client parameter divergence.
+- **Model Tiers**: Generic `high` / `medium` / `low` tiers. Each client maps tiers to concrete model names via `SetModels()`. Tier resolution cascade: StateDef → Session → default (none).
+- **Permission Mode Mapping**: Tenazas modes (`PLAN`, `AUTO_EDIT`, `YOLO`) are mapped internally by each client:
+  - Gemini: `--approval-mode PLAN|AUTO_EDIT` or `-y`
+  - Claude Code: `--permission-mode plan|acceptEdits` or `--dangerously-skip-permissions`
+- **Max Budget**: `MaxBudgetUSD` (float64, 0 = unlimited). Passed to Claude via `--max-budget-usd`. Gemini has no native support — silently skipped. Set at runtime with the `/budget` CLI command.
+- **GeminiClient**: Wraps `gemini` CLI with `--output-format stream-json` and `--resume <SID>`.
+- **ClaudeCodeClient**: Wraps `claude` CLI with `--output-format stream-json` and `--continue <SID>`.
+- **Registry**: Clients self-register via `init()` + `Register(name, constructor)`. The factory `NewClient(name, binPath, logPath)` returns the correct backend.
 - **CWD Injection**: All clients set `cmd.Dir` to the session's anchored path.
 - **Logging**: Captures `stderr` to `tenazas.log` for background diagnostics.
 
@@ -159,6 +165,7 @@ Provides the terminal interface.
 
 ### `internal/engine` (The Brain)
 Drives the skill execution loop using the `client.Client` interface for agent communication.
+- **RunOptions Construction**: Builds `RunOptions` per call with cascading overrides — model tier: `StateDef.ModelTier` > `Session.ModelTier`; budget: `SkillGraph.MaxBudgetUSD` > `Session.MaxBudgetUSD`.
 - **Intervention System**: Pause/retry/abort for failed tool calls.
 - **Thought Parser**: Extracts chain-of-thought from streaming responses.
 - **Max Loops**: Configurable safety limit on autonomous iterations.
@@ -181,8 +188,21 @@ Periodically scans for pending heartbeat files and runs skills automatically.
 ### Configuration
 Config is loaded via `~/.tenazas/config.json`, then overridden by Environment Variables:
 - `default_client`: Which agent backend to use (e.g., `"gemini"`, `"claude-code"`). Defaults to `"gemini"`.
-- `clients`: Map of client-specific settings (e.g., `{"gemini": {"binary": "/usr/local/bin/gemini"}}`).
-- `TENAZAS_TG_TOKEN`: Telegram Bot Token.
+- `clients`: Map of client-specific settings:
+  ```json
+  {
+    "gemini": {
+      "bin_path": "/usr/local/bin/gemini",
+      "models": { "high": "gemini-3.1-pro-preview", "medium": "gemini-3-flash-preview", "low": "gemini-2.5-flash-lite" }
+    },
+    "claude-code": {
+      "bin_path": "/usr/local/bin/claude",
+      "models": { "high": "opus", "medium": "sonnet", "low": "haiku" }
+    }
+  }
+  ```
+- `channel`: External communication channel object with `type` (`"telegram"` or `"disabled"`), `token`, `allowed_user_ids`, and `update_interval`.
+- `TENAZAS_TG_TOKEN`: Telegram Bot Token (overrides `channel.token`).
 - `TENAZAS_ALLOWED_IDS`: Comma-separated list of Telegram User IDs.
 - `TENAZAS_STORAGE_DIR`: Override for `~/.tenazas`.
 

@@ -38,6 +38,7 @@ func enableRawMode(fd int) (*syscall.Termios, error) {
 
 	raw := old
 	raw.Iflag &^= uint64(syscall.ICRNL | syscall.IXON)
+	raw.Oflag |= uint64(syscall.OPOST | syscall.ONLCR)
 	raw.Lflag &^= uint64(syscall.ECHO | syscall.ICANON | syscall.ISIG | syscall.IEXTEN)
 	raw.Cc[syscall.VMIN] = 1
 	raw.Cc[syscall.VTIME] = 0

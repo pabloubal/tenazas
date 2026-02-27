@@ -175,9 +175,9 @@ func (e *Engine) executeActionLoop(skill *models.SkillGraph, state *models.State
 		}
 	}
 
-	response, err := e.callLLM(state, sess)
+	response, err := e.callLLM(skill, state, sess)
 	if err != nil {
-		e.handleRetry(state, sess, "Gemini execution error: "+err.Error())
+		e.handleRetry(state, sess, "Client execution error: "+err.Error())
 		return
 	}
 	sess.PendingFeedback = ""
@@ -217,7 +217,7 @@ func (e *Engine) executeTool(state *models.StateDef, sess *models.Session) {
 	e.Sm.Save(sess)
 }
 
-func (e *Engine) callLLM(state *models.StateDef, sess *models.Session) (string, error) {
+func (e *Engine) callLLM(skill *models.SkillGraph, state *models.StateDef, sess *models.Session) (string, error) {
 	prompt := e.BuildPrompt(state, sess)
 	e.log(sess, events.AuditLLMPrompt, state.SessionRole, prompt)
 
@@ -226,9 +226,30 @@ func (e *Engine) callLLM(state *models.StateDef, sess *models.Session) (string, 
 	if approvalMode == "" {
 		approvalMode = sess.ApprovalMode
 	}
+	modelTier := state.ModelTier
+	if modelTier == "" {
+		modelTier = sess.ModelTier
+	}
+
+	// Skill-level budget overrides session-level.
+	budget := sess.MaxBudgetUSD
+	if skill != nil && skill.MaxBudgetUSD > 0 {
+		budget = skill.MaxBudgetUSD
+	}
+
+	opts := client.RunOptions{
+		NativeSID:    roleID,
+		Prompt:       prompt,
+		CWD:          sess.CWD,
+		ApprovalMode: approvalMode,
+		Yolo:         sess.Yolo,
+		ModelTier:    modelTier,
+		MaxBudgetUSD: budget,
+	}
+
 	onChunk := e.OnChunk(sess, state)
 	c := e.resolveClient(sess)
-	resp, err := c.Run(roleID, prompt, sess.CWD, approvalMode, sess.Yolo, onChunk, e.onSID(sess, state))
+	resp, err := c.Run(opts, onChunk, e.onSID(sess, state))
 	onChunk("")
 	return resp, err
 }
@@ -359,10 +380,19 @@ func (e *Engine) resumeAndRun(sess *models.Session, f func()) {
 func (e *Engine) executePromptInternal(sess *models.Session, prompt string) {
 	e.log(sess, events.AuditLLMPrompt, "user", prompt)
 
-	nativeSID := sess.RoleCache["default"]
+	opts := client.RunOptions{
+		NativeSID:    sess.RoleCache["default"],
+		Prompt:       prompt,
+		CWD:          sess.CWD,
+		ApprovalMode: sess.ApprovalMode,
+		Yolo:         sess.Yolo,
+		ModelTier:    sess.ModelTier,
+		MaxBudgetUSD: sess.MaxBudgetUSD,
+	}
+
 	onChunk := e.OnChunk(sess, &models.StateDef{SessionRole: "default"})
 	c := e.resolveClient(sess)
-	resp, err := c.Run(nativeSID, prompt, sess.CWD, sess.ApprovalMode, sess.Yolo, onChunk, func(newSID string) {
+	resp, err := c.Run(opts, onChunk, func(newSID string) {
 		sess.RoleCache["default"] = newSID
 		e.Sm.Save(sess)
 	})

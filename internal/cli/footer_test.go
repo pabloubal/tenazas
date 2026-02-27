@@ -19,24 +19,45 @@ import (
 
 func TestFormatFooter(t *testing.T) {
 	cases := []struct {
-		mode       string
-		yolo       bool
-		skillCount int
-		hint       string
-		expected   string
+		data     FooterData
+		contains []string
 	}{
-		{models.ApprovalModePlan, false, 5, "Searching...", "[PLAN] | Skills: 5 | Thought: Searching..."},
-		{models.ApprovalModeAutoEdit, false, 12, "Processing files", "[AUTO_EDIT] | Skills: 12 | Thought: Processing files"},
-		{models.ApprovalModePlan, true, 3, "Applying fix", "[YOLO] | Skills: 3 | Thought: Applying fix"},
-		{"", false, 0, "", "[PLAN] | Skills: 0 | Thought: "},
+		{
+			FooterData{Mode: models.ApprovalModePlan, SkillCount: 5, Hint: "Searching...", CWD: "/tmp/project"},
+			[]string{"[PLAN]", "Skills: 5", "Thought: Searching...", "CWD: /tmp/project"},
+		},
+		{
+			FooterData{Mode: models.ApprovalModeAutoEdit, SkillCount: 12, Hint: "Processing files", ModelTier: "high"},
+			[]string{"[AUTO_EDIT]", "Skills: 12", "Model: high", "Thought: Processing files"},
+		},
+		{
+			FooterData{Mode: models.ApprovalModePlan, Yolo: true, SkillCount: 3, Hint: "Applying fix", MaxBudgetUSD: 5.50},
+			[]string{"[YOLO]", "Skills: 3", "Budget: $5.50", "Thought: Applying fix"},
+		},
+		{
+			FooterData{Mode: "", SkillCount: 0},
+			[]string{"[PLAN]", "Skills: 0"},
+		},
 	}
 
 	for _, tc := range cases {
-		// This will fail to compile if FormatFooter signature is not updated
-		got := FormatFooter(tc.mode, tc.yolo, tc.skillCount, tc.hint)
-		if got != tc.expected {
-			t.Errorf("FormatFooter(%s, %v, %d, %s) = %q, want %q", tc.mode, tc.yolo, tc.skillCount, tc.hint, got, tc.expected)
+		got := FormatFooter(tc.data)
+		for _, s := range tc.contains {
+			if !strings.Contains(got, s) {
+				t.Errorf("FormatFooter(%+v) = %q, missing %q", tc.data, got, s)
+			}
 		}
+	}
+
+	// Budget should NOT appear when 0
+	got := FormatFooter(FooterData{Mode: "PLAN"})
+	if strings.Contains(got, "Budget") {
+		t.Errorf("expected no Budget in footer when 0, got %q", got)
+	}
+
+	// ModelTier should NOT appear when empty
+	if strings.Contains(got, "Model") {
+		t.Errorf("expected no Model in footer when empty, got %q", got)
 	}
 }
 

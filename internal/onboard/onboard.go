@@ -22,6 +22,20 @@ var knownClients = []struct {
 	{"claude-code", "claude"},
 }
 
+// defaultModels provides sensible model tier defaults per client.
+var defaultModels = map[string]map[string]string{
+	"gemini": {
+		"high":   "gemini-3.1-pro-preview",
+		"medium": "gemini-3-flash-preview",
+		"low":    "gemini-2.5-flash-lite",
+	},
+	"claude-code": {
+		"high":   "opus",
+		"medium": "sonnet",
+		"low":    "haiku",
+	},
+}
+
 type detectedClient struct {
 	Name    string
 	Bin     string
@@ -110,7 +124,35 @@ func Run(storageDir string) error {
 		}
 	}
 
-	// --- Step 4: select communication channel ---
+	// --- Step 4: configure model tiers ---
+	fmt.Println("  Model Tiers")
+	fmt.Println("  Tenazas uses generic tiers (high, medium, low) mapped to each client's models.")
+	fmt.Println()
+	for name, cc := range clients {
+		defaults, hasDefaults := defaultModels[name]
+		if !hasDefaults {
+			defaults = map[string]string{"high": "", "medium": "", "low": ""}
+		}
+		fmt.Printf("  %s model tiers:\n", name)
+		models := make(map[string]string)
+		for _, tier := range []string{"high", "medium", "low"} {
+			def := defaults[tier]
+			fmt.Printf("    %s (Enter for %q): ", tier, def)
+			if scanner.Scan() {
+				line := strings.TrimSpace(scanner.Text())
+				if line != "" {
+					models[tier] = line
+				} else {
+					models[tier] = def
+				}
+			}
+		}
+		cc.Models = models
+		clients[name] = cc
+		fmt.Println()
+	}
+
+	// --- Step 5: select communication channel ---
 	channelOptions := []menuItem{
 		{Label: "Telegram", Desc: "Receive notifications and control sessions via Telegram bot"},
 		{Label: "Disabled", Desc: "No external communication channel"},
@@ -128,20 +170,23 @@ func Run(storageDir string) error {
 	if chIdx == 0 {
 		channel = "telegram"
 
-		// --- Step 5: Telegram token ---
+		// Fresh scanner — selectMenu uses raw stdin which desyncs any prior bufio.Scanner.
+		tgScanner := bufio.NewScanner(os.Stdin)
+
+		// --- Step 6: Telegram token ---
 		fmt.Print("  Telegram Bot Token: ")
-		if scanner.Scan() {
-			tgToken = strings.TrimSpace(scanner.Text())
+		if tgScanner.Scan() {
+			tgToken = strings.TrimSpace(tgScanner.Text())
 		}
 		if tgToken == "" {
 			fmt.Println("  ⚠ No token provided — Telegram will not be active until configured.")
 		}
 
-		// --- Step 6: allowed user IDs ---
+		// --- Step 7: allowed user IDs ---
 		if tgToken != "" {
 			fmt.Print("  Allowed Telegram User IDs (comma-separated): ")
-			if scanner.Scan() {
-				line := strings.TrimSpace(scanner.Text())
+			if tgScanner.Scan() {
+				line := strings.TrimSpace(tgScanner.Text())
 				if line != "" {
 					for _, s := range strings.Split(line, ",") {
 						s = strings.TrimSpace(s)
@@ -154,32 +199,30 @@ func Run(storageDir string) error {
 		}
 	}
 
-	// --- Step 7: build config ---
-	geminiBinPath := "gemini"
-	if gc, ok := clients["gemini"]; ok {
-		geminiBinPath = gc.BinPath
-	}
-
+	// --- Step 8: build config ---
 	cfg := &config.Config{
-		StorageDir:     storageDir,
-		TelegramToken:  tgToken,
-		AllowedUserIDs: allowedIDs,
-		UpdateInterval: config.DefaultTgInterval,
-		GeminiBinPath:  geminiBinPath,
-		MaxLoops:       config.DefaultMaxLoops,
-		DefaultClient:  defaultClient,
-		Clients:        clients,
-		Channel:        channel,
+		StorageDir:    storageDir,
+		MaxLoops:      config.DefaultMaxLoops,
+		DefaultClient: defaultClient,
+		Clients:       clients,
+		Channel: config.ChannelConfig{
+			Type: channel,
+		},
+	}
+	if tgToken != "" {
+		cfg.Channel.Token = tgToken
+		cfg.Channel.AllowedUserIDs = allowedIDs
+		cfg.Channel.UpdateInterval = config.DefaultTgInterval
 	}
 
-	// --- Step 8: create directories ---
+	// --- Step 9: create directories ---
 	for _, sub := range []string{"", "sessions", "tasks", "skills", "heartbeats"} {
 		if err := os.MkdirAll(filepath.Join(storageDir, sub), 0755); err != nil {
 			return fmt.Errorf("creating directory: %w", err)
 		}
 	}
 
-	// --- Step 9: write config ---
+	// --- Step 10: write config ---
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling config: %w", err)

@@ -17,6 +17,7 @@ func init() { Register("gemini", newGeminiClient) }
 type GeminiClient struct {
 	binPath string
 	logPath string
+	models  map[string]string // tier → model name
 }
 
 func newGeminiClient(binPath, logPath string) Client {
@@ -25,13 +26,13 @@ func newGeminiClient(binPath, logPath string) Client {
 
 func (g *GeminiClient) Name() string { return "gemini" }
 
-func (g *GeminiClient) Run(nativeSID, prompt, cwd, approvalMode string, yolo bool,
-	onChunk func(string), onSessionID func(string)) (string, error) {
+func (g *GeminiClient) SetModels(m map[string]string) { g.models = m }
 
-	args := g.buildArgs(nativeSID, prompt, approvalMode, yolo)
+func (g *GeminiClient) Run(opts RunOptions, onChunk func(string), onSessionID func(string)) (string, error) {
+	args := g.buildArgs(opts)
 
 	cmd := exec.Command(g.binPath, args...)
-	cmd.Dir = cwd
+	cmd.Dir = opts.CWD
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -42,7 +43,7 @@ func (g *GeminiClient) Run(nativeSID, prompt, cwd, approvalMode string, yolo boo
 		return "", err
 	}
 
-	g.logExecution(args, prompt)
+	g.logExecution(args, opts.Prompt)
 
 	logFile, _ := os.OpenFile(g.logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if logFile != nil {
@@ -91,17 +92,27 @@ func (g *GeminiClient) Run(nativeSID, prompt, cwd, approvalMode string, yolo boo
 	return fullResponse.String(), cmd.Wait()
 }
 
-func (g *GeminiClient) buildArgs(nativeSID, prompt, approvalMode string, yolo bool) []string {
-	args := []string{"-s", "--output-format", "stream-json", "--prompt", prompt}
-	if nativeSID != "" {
-		args = append(args, "--resume", nativeSID)
+func (g *GeminiClient) buildArgs(opts RunOptions) []string {
+	args := []string{"-s", "--output-format", "stream-json", "--prompt", opts.Prompt}
+	if opts.NativeSID != "" {
+		args = append(args, "--resume", opts.NativeSID)
 	}
-	if yolo {
+	if opts.Yolo {
 		args = append(args, "-y")
-	} else if approvalMode != "" {
-		args = append(args, "--approval-mode", approvalMode)
+	} else if opts.ApprovalMode != "" {
+		args = append(args, "--approval-mode", opts.ApprovalMode)
+	}
+	if model := g.resolveModel(opts.ModelTier); model != "" {
+		args = append(args, "--model", model)
 	}
 	return args
+}
+
+func (g *GeminiClient) resolveModel(tier string) string {
+	if tier == "" || len(g.models) == 0 {
+		return ""
+	}
+	return g.models[tier]
 }
 
 func (g *GeminiClient) logExecution(args []string, prompt string) {

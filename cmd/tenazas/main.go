@@ -55,6 +55,9 @@ func main() {
 			log.Printf("Warning: could not init client %q: %v", name, cerr)
 			continue
 		}
+		if len(cc.Models) > 0 {
+			c.SetModels(cc.Models)
+		}
 		clients[name] = c
 	}
 	eng := engine.NewEngine(sm, clients, cfg.DefaultClient, cfg.MaxLoops)
@@ -66,7 +69,7 @@ func main() {
 
 	var tg *telegram.Telegram
 	if *daemon {
-		if cfg.Channel == "telegram" || (cfg.Channel == "" && cfg.TelegramToken != "") {
+		if cfg.Channel.Type == "telegram" {
 			tg = setupTelegram(cfg, sm, reg, eng)
 		}
 		hb := heartbeat.NewRunner(cfg.StorageDir, sm, eng, tg)
@@ -82,15 +85,15 @@ func main() {
 }
 
 func setupTelegram(cfg *config.Config, sm *session.Manager, reg *registry.Registry, eng *engine.Engine) *telegram.Telegram {
-	if cfg.TelegramToken == "" {
+	if cfg.Channel.Token == "" {
 		fmt.Println("Telegram token missing, running in CLI-only mode.")
 		return nil
 	}
 
 	tg := &telegram.Telegram{
-		Token:          cfg.TelegramToken,
-		AllowedIDs:     cfg.AllowedUserIDs,
-		UpdateInterval: cfg.UpdateInterval,
+		Token:          cfg.Channel.Token,
+		AllowedIDs:     cfg.Channel.AllowedUserIDs,
+		UpdateInterval: cfg.Channel.UpdateInterval,
 		Sm:             sm,
 		Reg:            reg,
 		Engine:         eng,
