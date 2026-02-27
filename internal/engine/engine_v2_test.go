@@ -4,7 +4,6 @@ import (
 	"os"
 	"testing"
 
-	"tenazas/internal/executor"
 	"tenazas/internal/models"
 	"tenazas/internal/session"
 )
@@ -38,8 +37,7 @@ func TestToolFailureRoute(t *testing.T) {
 	tmpStorage, _ := os.MkdirTemp("", "tenazas-engine-test-*")
 	defer os.RemoveAll(tmpStorage)
 	sm := session.NewManager(tmpStorage)
-	exec := executor.NewExecutor("false", tmpStorage)
-	e := NewEngine(sm, exec, 5)
+	e := NewEngine(sm, newTestClient("false", tmpStorage), "gemini", 5)
 
 	sess := &models.Session{
 		ID:         "test-sess-tool-fail",
@@ -82,8 +80,7 @@ func TestToolFailureNoRoute(t *testing.T) {
 	tmpStorage, _ := os.MkdirTemp("", "tenazas-engine-test-no-route-*")
 	defer os.RemoveAll(tmpStorage)
 	sm := session.NewManager(tmpStorage)
-	exec := executor.NewExecutor("false", tmpStorage)
-	e := NewEngine(sm, exec, 5)
+	e := NewEngine(sm, newTestClient("false", tmpStorage), "gemini", 5)
 
 	sess := &models.Session{
 		ID:         "test-sess-tool-fail-no-route",

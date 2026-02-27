@@ -29,7 +29,8 @@ internal/
   storage/              ← Atomic JSON I/O, path utilities
   session/              ← Session lifecycle (CRUD, audit, listing)
   registry/             ← Instance-to-session mapping (flock-based)
-  executor/             ← Gemini CLI subprocess management
+  client/               ← Agent CLI backends (Gemini, Claude Code, etc.)
+  onboard/              ← Interactive setup wizard, client detection
   engine/               ← Skill execution loop, thought parser
   skill/                ← Skill file loading and listing
   task/                 ← Task model, work subcommand
@@ -45,8 +46,8 @@ Packages are organized in layers. **A package may only import from the same laye
 
 | Layer | Packages | May Import |
 |-------|----------|------------|
-| 0 | `events`, `models`, `storage`, `executor`, `config` | stdlib only |
-| 1 | `formatter`, `registry`, `skill`, `task` | Layer 0 |
+| 0 | `events`, `models`, `storage`, `client`, `config` | stdlib only |
+| 1 | `formatter`, `registry`, `skill`, `task`, `onboard` | Layer 0 |
 | 2 | `session` | Layers 0–1 |
 | 3 | `engine` | Layers 0–2 |
 | 4 | `heartbeat`, `telegram`, `cli` | Layers 0–3 |
@@ -56,6 +57,41 @@ Packages are organized in layers. **A package may only import from the same laye
 - The `events.GlobalBus` for decoupled messaging
 - Interfaces defined in `models` (e.g., `EngineInterface`)
 - The `heartbeat.Notifier` interface for telegram decoupling
+
+## Adding a New Client
+
+To add support for a new coding-agent CLI:
+
+1. **Create `internal/client/<name>.go`** implementing the `client.Client` interface:
+   ```go
+   type Client interface {
+       Run(ctx context.Context, cwd string, sessionID string, prompt string, skilledPrompt string, onChunk func(Chunk)) error
+   }
+   ```
+   - `ctx`: Cancellation context for the subprocess.
+   - `cwd`: Working directory to set as `cmd.Dir`.
+   - `sessionID`: Native session ID for `--resume` (empty on first run).
+   - `prompt`: The raw user prompt.
+   - `skilledPrompt`: The prompt enriched with skill context by the engine.
+   - `onChunk`: Callback invoked for each parsed output chunk; normalize agent output into `Chunk{Type, SessionID, Content, Delta}`.
+
+2. **Add an `init()` function** that registers the client with the global registry:
+   ```go
+   func init() {
+       Register("<name>", func() Client { return &MyClient{} })
+   }
+   ```
+
+3. **Add the binary mapping in `internal/onboard/onboard.go`** so the setup wizard can detect the new CLI:
+   ```go
+   // Known client → binary name
+   {"<name>", "<binary-name>"}
+   ```
+
+4. **Test** with:
+   ```bash
+   go test ./internal/client/
+   ```
 
 ## Adding a New Feature
 

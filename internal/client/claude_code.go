@@ -1,4 +1,4 @@
-package executor
+package client
 
 import (
 	"bufio"
@@ -8,27 +8,29 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 )
 
-// Executor orchestrates the gemini CLI subprocess.
-type Executor struct {
-	BinPath string
-	LogPath string
+func init() { Register("claude-code", newClaudeCodeClient) }
+
+// ClaudeCodeClient drives the claude CLI subprocess.
+type ClaudeCodeClient struct {
+	binPath string
+	logPath string
 }
 
-func NewExecutor(binPath, storageDir string) *Executor {
-	return &Executor{
-		BinPath: binPath,
-		LogPath: filepath.Join(storageDir, "tenazas.log"),
-	}
+func newClaudeCodeClient(binPath, logPath string) Client {
+	return &ClaudeCodeClient{binPath: binPath, logPath: logPath}
 }
 
-func (e *Executor) Run(geminiSID string, prompt string, cwd string, approvalMode string, yolo bool, onChunk func(string), onSessionID func(string)) (string, error) {
-	args := e.buildArgs(geminiSID, prompt, approvalMode, yolo)
+func (c *ClaudeCodeClient) Name() string { return "claude-code" }
 
-	cmd := exec.Command(e.BinPath, args...)
+func (c *ClaudeCodeClient) Run(nativeSID, prompt, cwd, approvalMode string, yolo bool,
+	onChunk func(string), onSessionID func(string)) (string, error) {
+
+	args := c.buildArgs(nativeSID, prompt, yolo)
+
+	cmd := exec.Command(c.binPath, args...)
 	cmd.Dir = cwd
 
 	stdout, err := cmd.StdoutPipe()
@@ -40,9 +42,9 @@ func (e *Executor) Run(geminiSID string, prompt string, cwd string, approvalMode
 		return "", err
 	}
 
-	e.logExecution(args, prompt)
+	c.logExecution(args, prompt)
 
-	logFile, _ := os.OpenFile(e.LogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	logFile, _ := os.OpenFile(c.logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if logFile != nil {
 		defer logFile.Close()
 		go io.Copy(logFile, stderr)
@@ -54,7 +56,7 @@ func (e *Executor) Run(geminiSID string, prompt string, cwd string, approvalMode
 
 	var fullResponse bytes.Buffer
 	scanner := bufio.NewScanner(stdout)
-	const maxCapacity = 10 * 1024 * 1024 // 10MB
+	const maxCapacity = 10 * 1024 * 1024
 	buf := make([]byte, 64*1024)
 	scanner.Buffer(buf, maxCapacity)
 
@@ -78,7 +80,7 @@ func (e *Executor) Run(geminiSID string, prompt string, cwd string, approvalMode
 			if resp.SessionID != "" {
 				onSessionID(resp.SessionID)
 			}
-		case "message":
+		case "assistant":
 			if resp.Content != "" {
 				fullResponse.WriteString(resp.Content)
 				onChunk(resp.Content)
@@ -89,22 +91,19 @@ func (e *Executor) Run(geminiSID string, prompt string, cwd string, approvalMode
 	return fullResponse.String(), cmd.Wait()
 }
 
-func (e *Executor) buildArgs(geminiSID, prompt, approvalMode string, yolo bool) []string {
-	args := []string{"-s", "--output-format", "stream-json", "--prompt", prompt}
-	if geminiSID != "" {
-		args = append(args, "--resume", geminiSID)
+func (c *ClaudeCodeClient) buildArgs(nativeSID, prompt string, yolo bool) []string {
+	args := []string{"--output-format", "stream-json", "-p", prompt}
+	if nativeSID != "" {
+		args = append(args, "--continue", nativeSID)
 	}
 	if yolo {
-		args = append(args, "-y")
-	} else if approvalMode != "" {
-		args = append(args, "--approval-mode", approvalMode)
+		args = append(args, "--dangerously-skip-permissions")
 	}
-
 	return args
 }
 
-func (e *Executor) logExecution(args []string, prompt string) {
-	logFile, _ := os.OpenFile(e.LogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+func (c *ClaudeCodeClient) logExecution(args []string, prompt string) {
+	logFile, _ := os.OpenFile(c.logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if logFile == nil {
 		return
 	}
@@ -122,5 +121,5 @@ func (e *Executor) logExecution(args []string, prompt string) {
 			displayArgs[i] = displayPrompt
 		}
 	}
-	fmt.Fprintf(logFile, "\n[DEBUG] Executing: %s %s\n", e.BinPath, strings.Join(displayArgs, " "))
+	fmt.Fprintf(logFile, "\n[DEBUG] Executing: %s %s\n", c.binPath, strings.Join(displayArgs, " "))
 }

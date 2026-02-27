@@ -8,9 +8,11 @@ import (
 
 	"github.com/google/uuid"
 
+	"path/filepath"
+
+	"tenazas/internal/client"
 	"tenazas/internal/engine"
 	"tenazas/internal/events"
-	"tenazas/internal/executor"
 	"tenazas/internal/registry"
 	"tenazas/internal/session"
 )
@@ -42,11 +44,13 @@ func TestPromptStyle(t *testing.T) {
 }
 
 func TestThinkingStateTransition(t *testing.T) {
-	sm := session.NewManager(t.TempDir())
-	exec := executor.NewExecutor("gemini", t.TempDir())
-	reg, _ := registry.NewRegistry(t.TempDir())
-	eng := engine.NewEngine(sm, exec, 5)
-	cli := NewCLI(sm, exec, reg, eng)
+	tmpDir := t.TempDir()
+	sm := session.NewManager(tmpDir)
+	c, _ := client.NewClient("gemini", "gemini", filepath.Join(tmpDir, "tenazas.log"))
+	clients := map[string]client.Client{"gemini": c}
+	reg, _ := registry.NewRegistry(tmpDir)
+	eng := engine.NewEngine(sm, clients, "gemini", 5)
+	cli := NewCLI(sm, reg, eng, "gemini")
 
 	sessionID := uuid.New().String()
 	go cli.listenEvents(sessionID)

@@ -18,7 +18,7 @@ func TestCycleMode(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	sm := session.NewManager(tmpDir)
-	cli := NewCLI(sm, nil, nil, nil)
+	cli := NewCLI(sm, nil, nil, "gemini")
 	sess := &models.Session{
 		ID:           uuid.New().String(),
 		CWD:          tmpDir,
@@ -51,7 +51,7 @@ func TestHandleModeConsistency(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	sm := session.NewManager(tmpDir)
-	cli := NewCLI(sm, nil, nil, nil)
+	cli := NewCLI(sm, nil, nil, "gemini")
 	sess := &models.Session{
 		ID:           uuid.New().String(),
 		CWD:          tmpDir,
@@ -77,7 +77,7 @@ func TestShiftTabDetection(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	sm := session.NewManager(tmpDir)
-	cli := NewCLI(sm, nil, nil, nil)
+	cli := NewCLI(sm, nil, nil, "gemini")
 	sess := &models.Session{
 		ID:           uuid.New().String(),
 		CWD:          tmpDir,
@@ -114,7 +114,7 @@ func TestFooterUpdateOnModeSwitch(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	sm := session.NewManager(tmpDir)
-	cli := NewCLI(sm, nil, nil, nil)
+	cli := NewCLI(sm, nil, nil, "gemini")
 	sess := &models.Session{
 		ID:           "test-session-id",
 		CWD:          tmpDir,

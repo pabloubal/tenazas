@@ -6,8 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	"path/filepath"
+
+	"tenazas/internal/client"
 	"tenazas/internal/engine"
-	"tenazas/internal/executor"
 	"tenazas/internal/registry"
 	"tenazas/internal/session"
 )
@@ -22,11 +24,12 @@ func TestVisualBranding(t *testing.T) {
 
 	sm := session.NewManager(tmpDir)
 	reg, _ := registry.NewRegistry(tmpDir)
-	exec := executor.NewExecutor("gemini", tmpDir)
-	eng := engine.NewEngine(sm, exec, 5)
+	c, _ := client.NewClient("gemini", "gemini", filepath.Join(tmpDir, "tenazas.log"))
+	clients := map[string]client.Client{"gemini": c}
+	eng := engine.NewEngine(sm, clients, "gemini", 5)
 
 	var out bytes.Buffer
-	cli := NewCLI(sm, exec, reg, eng)
+	cli := NewCLI(sm, reg, eng, "gemini")
 	cli.Out = &out
 
 	// Initialize session so drawBranding has something to show

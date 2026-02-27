@@ -15,7 +15,7 @@ func TestEngineThoughtEvents(t *testing.T) {
 	defer os.RemoveAll(storageDir)
 
 	sm := session.NewManager(storageDir)
-	engine := NewEngine(sm, nil, 5)
+	engine := NewEngine(sm, nil, "gemini", 5)
 
 	sess := &models.Session{
 		ID:        "sess-thought-test",
@@ -82,7 +82,7 @@ func TestEngineNoThoughtEvents(t *testing.T) {
 	defer os.RemoveAll(storageDir)
 
 	sm := session.NewManager(storageDir)
-	engine := NewEngine(sm, nil, 5)
+	engine := NewEngine(sm, nil, "gemini", 5)
 
 	sess := &models.Session{
 		ID:        "sess-nothought-test",

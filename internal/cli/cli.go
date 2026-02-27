@@ -26,9 +26,9 @@ import (
 
 type CLI struct {
 	Sm            *session.Manager
-	Exec          interface{} // kept for compatibility
 	Reg           *registry.Registry
 	Engine        *engine.Engine
+	DefaultClient string
 	In            io.Reader
 	Out           io.Writer
 	sess          *models.Session
@@ -57,14 +57,14 @@ func (c *CLI) refreshSkillCount() {
 	}
 }
 
-func NewCLI(sm *session.Manager, exec interface{}, reg *registry.Registry, eng *engine.Engine) *CLI {
+func NewCLI(sm *session.Manager, reg *registry.Registry, eng *engine.Engine, defaultClient string) *CLI {
 	return &CLI{
-		Sm:     sm,
-		Exec:   exec,
-		Reg:    reg,
-		Engine: eng,
-		In:     os.Stdin,
-		Out:    os.Stdout,
+		Sm:            sm,
+		Reg:           reg,
+		Engine:        eng,
+		DefaultClient: defaultClient,
+		In:            os.Stdin,
+		Out:           os.Stdout,
 	}
 }
 
@@ -162,7 +162,12 @@ func (c *CLI) drawBrandingAtomic(sb *strings.Builder) {
 
 	if c.sess != nil {
 		fmt.Fprintf(sb, "%sSession: %s%s\n", escDim, c.sess.ID, escReset)
-		fmt.Fprintf(sb, "%sPath:    %s%s\n\n", escDim, c.sess.CWD, escReset)
+		fmt.Fprintf(sb, "%sPath:    %s%s\n", escDim, c.sess.CWD, escReset)
+		clientName := c.sess.Client
+		if clientName == "" {
+			clientName = c.DefaultClient
+		}
+		fmt.Fprintf(sb, "%sClient:  %s%s\n\n", escDim, clientName, escReset)
 	}
 }
 
@@ -337,6 +342,7 @@ func (c *CLI) initializeSession(resume bool) (*models.Session, error) {
 	cwd, _ := os.Getwd()
 	sess := &models.Session{
 		ID:           uuid.New().String(),
+		Client:       c.DefaultClient,
 		CWD:          cwd,
 		LastUpdated:  time.Now(),
 		RoleCache:    make(map[string]string),

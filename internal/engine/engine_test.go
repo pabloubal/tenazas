@@ -6,19 +6,24 @@ import (
 	"testing"
 	"time"
 
+	"tenazas/internal/client"
+	_ "tenazas/internal/client" // register clients
 	"tenazas/internal/events"
-	"tenazas/internal/executor"
 	"tenazas/internal/models"
 	"tenazas/internal/session"
 )
+
+func newTestClient(binPath, storageDir string) map[string]client.Client {
+	c, _ := client.NewClient("gemini", binPath, filepath.Join(storageDir, "tenazas.log"))
+	return map[string]client.Client{"gemini": c}
+}
 
 func TestEngineBasic(t *testing.T) {
 	storageDir, _ := os.MkdirTemp("", "tenazas-engine-test-*")
 	defer os.RemoveAll(storageDir)
 
 	sm := session.NewManager(storageDir)
-	exec := executor.NewExecutor("echo", storageDir) // Dummy exec
-	engine := NewEngine(sm, exec, 5)
+	engine := NewEngine(sm, newTestClient("echo", storageDir), "gemini", 5)
 
 	skill := &models.SkillGraph{
 		Name:         "test-skill",
@@ -50,8 +55,7 @@ func TestEngineTool(t *testing.T) {
 	defer os.RemoveAll(storageDir)
 
 	sm := session.NewManager(storageDir)
-	exec := executor.NewExecutor("echo", storageDir)
-	engine := NewEngine(sm, exec, 5)
+	engine := NewEngine(sm, newTestClient("echo", storageDir), "gemini", 5)
 
 	skill := &models.SkillGraph{
 		Name:         "tool-skill",
@@ -87,8 +91,7 @@ func TestEngineIntervention(t *testing.T) {
 	defer os.RemoveAll(storageDir)
 
 	sm := session.NewManager(storageDir)
-	exec := executor.NewExecutor("echo", storageDir)
-	engine := NewEngine(sm, exec, 5)
+	engine := NewEngine(sm, newTestClient("echo", storageDir), "gemini", 5)
 
 	skill := &models.SkillGraph{
 		Name:         "interv-skill",
@@ -135,8 +138,8 @@ echo '{"type": "message", "content": "Done"}'
 	scriptPath := filepath.Join(storageDir, "dummy.sh")
 	os.WriteFile(scriptPath, []byte(dummyScript), 0755)
 
-	exec := executor.NewExecutor(scriptPath, storageDir)
-	engine := NewEngine(sm, exec, 2)
+	exec := newTestClient(scriptPath, storageDir)
+	engine := NewEngine(sm, exec, "gemini", 2)
 
 	skill := &models.SkillGraph{
 		Name:         "loop-skill",
@@ -178,8 +181,7 @@ func TestEngineFailRoute(t *testing.T) {
 	defer os.RemoveAll(storageDir)
 
 	sm := session.NewManager(storageDir)
-	exec := executor.NewExecutor("echo", storageDir)
-	engine := NewEngine(sm, exec, 2)
+	engine := NewEngine(sm, newTestClient("echo", storageDir), "gemini", 2)
 
 	skill := &models.SkillGraph{
 		Name:         "fail-skill",
@@ -219,9 +221,7 @@ func TestEngineResolveInstruction(t *testing.T) {
 	defer os.RemoveAll(storageDir)
 
 	sm := session.NewManager(storageDir)
-	engine := NewEngine(sm, nil, 5)
-
-	// Test literal instruction
+	engine := NewEngine(sm, nil, "gemini", 5)
 	instr := engine.ResolveInstruction("do something", ".")
 	if instr != "do something" {
 		t.Errorf("expected 'do something', got %s", instr)
@@ -292,8 +292,7 @@ echo '{"type": "message", "content": "Direct response"}'
 	scriptPath := filepath.Join(storageDir, "dummy.sh")
 	os.WriteFile(scriptPath, []byte(dummyScript), 0755)
 
-	exec := executor.NewExecutor(scriptPath, storageDir)
-	engine := NewEngine(sm, exec, 5)
+	engine := NewEngine(sm, newTestClient(scriptPath, storageDir), "gemini", 5)
 
 	sess := &models.Session{
 		ID:        "sess-prompt",

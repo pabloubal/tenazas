@@ -51,6 +51,7 @@ type StateDef struct {
 // Session represents a Tenazas session.
 type Session struct {
 	ID                  string            `json:"id"`
+	Client              string            `json:"client,omitempty"`
 	CWD                 string            `json:"cwd"`
 	Title               string            `json:"title"`
 	SkillName           string            `json:"skill_name,omitempty"`

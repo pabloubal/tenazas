@@ -3,10 +3,11 @@ package heartbeat
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"testing"
 
+	"tenazas/internal/client"
 	"tenazas/internal/engine"
-	"tenazas/internal/executor"
 	"tenazas/internal/models"
 	"tenazas/internal/session"
 )
@@ -33,8 +34,9 @@ func TestHeartbeatTriggerNewMonitoring(t *testing.T) {
 	defer os.RemoveAll(storageDir)
 
 	sm := session.NewManager(storageDir)
-	exec := executor.NewExecutor("echo", storageDir)
-	eng := engine.NewEngine(sm, exec, 5)
+	c, _ := client.NewClient("gemini", "echo", filepath.Join(storageDir, "tenazas.log"))
+	clients := map[string]client.Client{"gemini": c}
+	eng := engine.NewEngine(sm, clients, "gemini", 5)
 
 	notif := &mockNotifier{}
 

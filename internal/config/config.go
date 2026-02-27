@@ -17,13 +17,21 @@ const (
 	ConfigFileName    = "config.json"
 )
 
+// ClientConfig holds settings for a single coding-agent client.
+type ClientConfig struct {
+	BinPath string `json:"bin_path"`
+}
+
 type Config struct {
-	StorageDir     string  `json:"storage_dir"`
-	TelegramToken  string  `json:"telegram_token"`
-	AllowedUserIDs []int64 `json:"allowed_user_ids"`
-	UpdateInterval int     `json:"update_interval"`
-	GeminiBinPath  string  `json:"gemini_bin_path"`
-	MaxLoops       int     `json:"max_loops"`
+	StorageDir     string                  `json:"storage_dir"`
+	TelegramToken  string                  `json:"telegram_token"`
+	AllowedUserIDs []int64                 `json:"allowed_user_ids"`
+	UpdateInterval int                     `json:"update_interval"`
+	GeminiBinPath  string                  `json:"gemini_bin_path"`
+	MaxLoops       int                     `json:"max_loops"`
+	DefaultClient  string                  `json:"default_client,omitempty"`
+	Clients        map[string]ClientConfig `json:"clients,omitempty"`
+	Channel        string                  `json:"channel,omitempty"`
 }
 
 func GetDefaultStoragePath() string {
@@ -42,6 +50,7 @@ func Load() (*Config, error) {
 		UpdateInterval: DefaultTgInterval,
 		GeminiBinPath:  "gemini",
 		MaxLoops:       DefaultMaxLoops,
+		DefaultClient:  "gemini",
 	}
 
 	cfgPath := filepath.Join(cfg.StorageDir, ConfigFileName)
@@ -68,6 +77,16 @@ func Load() (*Config, error) {
 		if l, err := strconv.Atoi(envLoops); err == nil {
 			cfg.MaxLoops = l
 		}
+	}
+
+	// Backward compatibility: populate Clients map from legacy GeminiBinPath
+	if len(cfg.Clients) == 0 {
+		cfg.Clients = map[string]ClientConfig{
+			"gemini": {BinPath: cfg.GeminiBinPath},
+		}
+	}
+	if cfg.DefaultClient == "" {
+		cfg.DefaultClient = "gemini"
 	}
 
 	os.MkdirAll(cfg.StorageDir, 0755)

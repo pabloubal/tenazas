@@ -1,6 +1,6 @@
 # Tenazas: Technical Architecture & Development Guide
 
-Tenazas is a high-performance, zero-dependency Go gateway for the `gemini` CLI. It enables seamless session handoff between local terminal environments and remote Telegram interfaces while maintaining full filesystem awareness.
+Tenazas is a high-performance, zero-dependency Go gateway for coding-agent CLIs (Gemini, Claude Code, and more). It enables seamless session handoff between local terminal environments and remote Telegram interfaces while maintaining full filesystem awareness.
 
 ## 1. Core Philosophy
 - **Zero Dependencies**: Built strictly with the Go Standard Library (plus `google/uuid` for ID generation).
@@ -19,7 +19,10 @@ internal/
   storage/storage.go             ← Atomic JSON I/O, Slugify, path resolution
   session/session.go             ← Session CRUD, audit log, skill registry, listing
   registry/registry.go           ← Flock-based instance-to-session mapping
-  executor/executor.go           ← Gemini subprocess, JSONL parsing
+  client/
+    client.go                    ← Client interface, registry, factory
+    gemini.go                    ← GeminiClient: gemini CLI subprocess, JSONL parsing
+    claude_code.go               ← ClaudeCodeClient: claude CLI subprocess
   engine/
     engine.go                    ← Skill execution loop, intervention, prompt building
     thought_parser.go            ← Chain-of-thought stream parser
@@ -34,6 +37,7 @@ internal/
     terminal_darwin.go           ← macOS raw mode / terminal size
     terminal_linux.go            ← Linux raw mode / terminal size
   formatter/formatter.go         ← AnsiFormatter (CLI), HtmlFormatter (Telegram)
+  onboard/onboard.go             ← Interactive setup wizard, client detection
 ```
 
 ## 3. Architecture Overview
@@ -60,7 +64,7 @@ graph TD
         Events[events: EventBus + Audit]
         Models[models: Domain Types]
         Storage[storage: Atomic JSON]
-        Executor[executor: Gemini Bridge]
+        Client[client: Agent Backends]
         Config[config: Settings]
     end
 
@@ -81,7 +85,7 @@ graph TD
     TG --> Session
     TG --> Registry
     Engine --> Session
-    Engine --> Executor
+    Engine --> Client
     Engine --> Events
     HB --> Engine
     HB --> Session
@@ -99,13 +103,14 @@ graph TD
 Packages follow a strict layered dependency graph. **No circular imports.**
 
 ```
-Layer 0 (no internal deps):  events, models, storage, executor, config
+Layer 0 (no internal deps):  events, models, storage, client, config
 Layer 1 (foundation deps):   formatter → events
                               registry → storage
                               skill → config, models, storage
                               task → storage
+                              onboard → config
 Layer 2 (mid-tier):          session → events, models, skill, storage
-Layer 3 (orchestration):     engine → events, executor, models, session
+Layer 3 (orchestration):     engine → events, client, models, session
 Layer 4 (top-tier):          heartbeat → engine, events, models, session, storage, task
                               telegram → events, formatter, models, registry, session
                               cli → engine, events, formatter, models, registry, session, skill
@@ -120,15 +125,17 @@ Layer 5 (entrypoint):        cmd/tenazas → all of the above
 
 ### `internal/session` (The State)
 Manages the lifecycle of a session.
-- **Data Model**: Stores Tenazas UUID, the native `gemini_sid`, the `cwd` (anchor path), and the session `title`.
+- **Data Model**: Stores Tenazas UUID, the native `gemini_sid`, the `cwd` (anchor path), the session `title`, and the `Client` name identifying which agent backend owns the session.
 - **Persistence**: Atomic JSON writes to project-specific subdirectories in `~/.tenazas/sessions/`.
 - **Pagination**: Supports high-performance directory scanning and sorting for the `/resume` interface.
 
-### `internal/executor` (The Bridge)
-Orchestrates the `gemini` CLI subprocess.
-- **JSONL Parsing**: Reads the `--output-format json-stream` from `stdout`.
-- **Session Continuity**: Uses `--resume <GeminiSID>` for follow-up prompts.
-- **CWD Injection**: Strictly sets `cmd.Dir` to the session's anchored path.
+### `internal/client` (Agent Backends)
+Strategy pattern for pluggable coding-agent CLIs.
+- **Client Interface**: `Run(ctx, cwd, sessionID, prompt, skilledPrompt, onChunk)` — the contract every backend must implement.
+- **GeminiClient**: Wraps `gemini` CLI with `--output-format json-stream` and `--resume <SID>`.
+- **ClaudeCodeClient**: Wraps `claude` CLI with `--output-format stream-json` and `--resume <SID>`.
+- **Registry**: Clients self-register via `init()` + `Register(name, constructor)`. The factory `New(name)` returns the correct backend.
+- **CWD Injection**: All clients set `cmd.Dir` to the session's anchored path.
 - **Logging**: Captures `stderr` to `tenazas.log` for background diagnostics.
 
 ### `internal/registry` (Multi-Process Sync)
@@ -145,12 +152,13 @@ A raw HTTP implementation of the Telegram Bot API.
 
 ### `internal/cli` (The Local REPL)
 Provides the terminal interface.
-- **Streaming**: Real-time `fmt.Print` of Gemini chunks.
+- **Streaming**: Real-time `fmt.Print` of agent chunks.
+- **Banner**: Shows the active client name at startup (e.g., `[gemini]`, `[claude-code]`).
 - **Menu**: Interactive paginated list for session resumption.
 - **Immersive Mode**: Split-pane with thought drawer and footer bar.
 
 ### `internal/engine` (The Brain)
-Drives the skill execution loop.
+Drives the skill execution loop using the `client.Client` interface for agent communication.
 - **Intervention System**: Pause/retry/abort for failed tool calls.
 - **Thought Parser**: Extracts chain-of-thought from streaming responses.
 - **Max Loops**: Configurable safety limit on autonomous iterations.
@@ -166,27 +174,32 @@ Periodically scans for pending heartbeat files and runs skills automatically.
 - `config.json`: Global settings.
 - `registry.json`: Instance-to-session mapping.
 - `.registry.lock`: System-level lock file.
-- `tenazas.log`: Combined `stderr` from Gemini processes.
+- `tenazas.log`: Combined `stderr` from agent processes.
 - `sessions/`: Project-specific subdirectories containing UUID-named JSON files.
 - `tasks/`: Project-specific subdirectories containing task Markdown files.
 
 ### Configuration
 Config is loaded via `~/.tenazas/config.json`, then overridden by Environment Variables:
+- `default_client`: Which agent backend to use (e.g., `"gemini"`, `"claude-code"`). Defaults to `"gemini"`.
+- `clients`: Map of client-specific settings (e.g., `{"gemini": {"binary": "/usr/local/bin/gemini"}}`).
 - `TENAZAS_TG_TOKEN`: Telegram Bot Token.
 - `TENAZAS_ALLOWED_IDS`: Comma-separated list of Telegram User IDs.
 - `TENAZAS_STORAGE_DIR`: Override for `~/.tenazas`.
 
+Run `tenazas onboard` for an interactive setup wizard that detects installed agent CLIs and writes the initial config.
+
 ### Handoff Flow
-1. **Desktop**: User starts `tenazas` in `~/projects/api`. A session is created, anchored to that path.
+1. **Desktop**: User starts `tenazas` in `~/projects/api`. A session is created with the configured client, anchored to that path.
 2. **Mobile**: User sends a message to the TG bot.
 3. **Logic**: The bot sees no active session for that `ChatID`. It loads the `latest` updated session from disk.
-4. **Execution**: The bot spawns `gemini --resume <SID>` with `cmd.Dir = "~/projects/api"`.
-5. **Result**: Seamless continuity across platforms.
+4. **Execution**: The bot reads the session's `Client` field, instantiates the matching backend, and spawns the agent CLI with `--resume <SID>` and `cmd.Dir = "~/projects/api"`.
+5. **Result**: Seamless continuity across platforms, regardless of which agent backend owns the session.
 
 ## 7. Development Guidelines
 - **No Heavy Imports**: Keep the binary lean. Avoid external SDKs.
 - **Lock First**: Always wrap Registry or Session writes in the locking logic.
 - **Path Safety**: Always use `filepath.Join` and validate paths before `os.MkdirAll`.
-- **CLI Compatibility**: Maintain parity with the `gemini` CLI's JSONL schema (`type`, `session_id`, `content`, `delta`).
+- **CLI Compatibility**: Each client must normalize its agent's output into the common chunk schema (`type`, `session_id`, `content`, `delta`) consumed by the engine.
+- **Adding Clients**: Implement `client.Client` in a new file under `internal/client/`, self-register with `Register()` in `init()`, and add the binary mapping in `internal/onboard/`.
 - **Respect Layer Boundaries**: Never import a higher-layer package from a lower-layer one.
 - **Tests Co-located**: Every `_test.go` file lives in the same directory as the code it tests.

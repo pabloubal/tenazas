@@ -10,29 +10,49 @@ import (
 	"sync"
 	"time"
 
+	"tenazas/internal/client"
 	"tenazas/internal/events"
-	"tenazas/internal/executor"
 	"tenazas/internal/models"
 	"tenazas/internal/session"
 )
 
 type Engine struct {
-	Sm         *session.Manager
-	Exec       *executor.Executor
-	MaxLoops   int
-	intervs    map[string]chan string
-	intervsMux sync.RWMutex
-	running    sync.Map
+	Sm            *session.Manager
+	Clients       map[string]client.Client
+	DefaultClient string
+	MaxLoops      int
+	intervs       map[string]chan string
+	intervsMux    sync.RWMutex
+	running       sync.Map
 }
 
-func NewEngine(sm *session.Manager, exec *executor.Executor, maxLoops int) *Engine {
+func NewEngine(sm *session.Manager, clients map[string]client.Client, defaultClient string, maxLoops int) *Engine {
 	return &Engine{
-		Sm:       sm,
-		Exec:     exec,
-		MaxLoops: maxLoops,
-		intervs:  make(map[string]chan string),
-		running:  sync.Map{},
+		Sm:            sm,
+		Clients:       clients,
+		DefaultClient: defaultClient,
+		MaxLoops:      maxLoops,
+		intervs:       make(map[string]chan string),
+		running:       sync.Map{},
 	}
+}
+
+// resolveClient picks the right Client for a session.
+func (e *Engine) resolveClient(sess *models.Session) client.Client {
+	name := sess.Client
+	if name == "" {
+		name = e.DefaultClient
+	}
+	if c, ok := e.Clients[name]; ok {
+		return c
+	}
+	if c, ok := e.Clients[e.DefaultClient]; ok {
+		return c
+	}
+	for _, c := range e.Clients {
+		return c
+	}
+	return nil
 }
 
 func (e *Engine) IsRunning(sessionID string) bool {
@@ -207,7 +227,8 @@ func (e *Engine) callLLM(state *models.StateDef, sess *models.Session) (string, 
 		approvalMode = sess.ApprovalMode
 	}
 	onChunk := e.OnChunk(sess, state)
-	resp, err := e.Exec.Run(roleID, prompt, sess.CWD, approvalMode, sess.Yolo, onChunk, e.onSID(sess, state))
+	c := e.resolveClient(sess)
+	resp, err := c.Run(roleID, prompt, sess.CWD, approvalMode, sess.Yolo, onChunk, e.onSID(sess, state))
 	onChunk("")
 	return resp, err
 }
@@ -338,9 +359,10 @@ func (e *Engine) resumeAndRun(sess *models.Session, f func()) {
 func (e *Engine) executePromptInternal(sess *models.Session, prompt string) {
 	e.log(sess, events.AuditLLMPrompt, "user", prompt)
 
-	geminiSID := sess.RoleCache["default"]
-	onChunk := e.OnChunk(sess, &models.StateDef{SessionRole: "gemini"})
-	resp, err := e.Exec.Run(geminiSID, prompt, sess.CWD, sess.ApprovalMode, sess.Yolo, onChunk, func(newSID string) {
+	nativeSID := sess.RoleCache["default"]
+	onChunk := e.OnChunk(sess, &models.StateDef{SessionRole: "default"})
+	c := e.resolveClient(sess)
+	resp, err := c.Run(nativeSID, prompt, sess.CWD, sess.ApprovalMode, sess.Yolo, onChunk, func(newSID string) {
 		sess.RoleCache["default"] = newSID
 		e.Sm.Save(sess)
 	})
@@ -349,7 +371,7 @@ func (e *Engine) executePromptInternal(sess *models.Session, prompt string) {
 	if err != nil {
 		e.log(sess, events.AuditInfo, "engine", "LLM Error: "+err.Error())
 	} else {
-		e.log(sess, events.AuditLLMResponse, "gemini", resp)
+		e.log(sess, events.AuditLLMResponse, "default", resp)
 	}
 }
 

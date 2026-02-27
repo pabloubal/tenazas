@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"tenazas/internal/client"
 	"tenazas/internal/engine"
-	"tenazas/internal/executor"
 	"tenazas/internal/models"
 	"tenazas/internal/session"
 	"tenazas/internal/storage"
@@ -21,8 +21,9 @@ func TestHeartbeatMultiSkillSequence(t *testing.T) {
 	tmpStorage, _ := os.MkdirTemp("", "tenazas-hb-seq-test-*")
 	defer os.RemoveAll(tmpStorage)
 	sm := session.NewManager(tmpStorage)
-	exec := executor.NewExecutor("echo '{\"type\": \"init\", \"session_id\": \"sid-hb\"}'", tmpStorage)
-	eng := engine.NewEngine(sm, exec, 5)
+	c, _ := client.NewClient("gemini", "echo '{\"type\": \"init\", \"session_id\": \"sid-hb\"}'", filepath.Join(tmpStorage, "tenazas.log"))
+	clients := map[string]client.Client{"gemini": c}
+	eng := engine.NewEngine(sm, clients, "gemini", 5)
 
 	hb := models.Heartbeat{
 		Name:     "test-sequence",
@@ -73,8 +74,9 @@ func TestHeartbeatFailureTracking(t *testing.T) {
 	tmpStorage, _ := os.MkdirTemp("", "tenazas-hb-fail-test-*")
 	defer os.RemoveAll(tmpStorage)
 	sm := session.NewManager(tmpStorage)
-	exec := executor.NewExecutor("echo '{\"type\": \"init\", \"session_id\": \"sid-hb\"}'", tmpStorage)
-	eng := engine.NewEngine(sm, exec, 5)
+	c2, _ := client.NewClient("gemini", "echo '{\"type\": \"init\", \"session_id\": \"sid-hb\"}'", filepath.Join(tmpStorage, "tenazas.log"))
+	clients2 := map[string]client.Client{"gemini": c2}
+	eng := engine.NewEngine(sm, clients2, "gemini", 5)
 
 	cwd, _ := os.Getwd()
 	tasksDir := filepath.Join(tmpStorage, "tasks", storage.Slugify(cwd))

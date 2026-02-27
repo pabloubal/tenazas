@@ -6,14 +6,17 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"tenazas/internal/cli"
+	"tenazas/internal/client"
+	_ "tenazas/internal/client" // register client implementations
 	"tenazas/internal/config"
 	"tenazas/internal/engine"
-	"tenazas/internal/executor"
 	"tenazas/internal/heartbeat"
 	"tenazas/internal/models"
+	"tenazas/internal/onboard"
 	"tenazas/internal/registry"
 	"tenazas/internal/session"
 	"tenazas/internal/task"
@@ -30,14 +33,31 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
+	// Handle subcommands that don't need full initialization
+	if flag.Arg(0) == "onboard" {
+		if err := onboard.Run(cfg.StorageDir); err != nil {
+			log.Fatalf("Onboard failed: %v", err)
+		}
+		return
+	}
+
 	sm := session.NewManager(cfg.StorageDir)
 	reg, err := registry.NewRegistry(cfg.StorageDir)
 	if err != nil {
 		log.Fatalf("Failed to init registry: %v", err)
 	}
 
-	exec := executor.NewExecutor(cfg.GeminiBinPath, cfg.StorageDir)
-	eng := engine.NewEngine(sm, exec, cfg.MaxLoops)
+	logPath := filepath.Join(cfg.StorageDir, "tenazas.log")
+	clients := make(map[string]client.Client)
+	for name, cc := range cfg.Clients {
+		c, cerr := client.NewClient(name, cc.BinPath, logPath)
+		if cerr != nil {
+			log.Printf("Warning: could not init client %q: %v", name, cerr)
+			continue
+		}
+		clients[name] = c
+	}
+	eng := engine.NewEngine(sm, clients, cfg.DefaultClient, cfg.MaxLoops)
 
 	if flag.Arg(0) == "work" {
 		task.HandleWorkCommand(cfg.StorageDir, flag.Args()[1:])
@@ -46,20 +66,22 @@ func main() {
 
 	var tg *telegram.Telegram
 	if *daemon {
-		tg = setupTelegram(cfg, sm, exec, reg, eng)
+		if cfg.Channel == "telegram" || (cfg.Channel == "" && cfg.TelegramToken != "") {
+			tg = setupTelegram(cfg, sm, reg, eng)
+		}
 		hb := heartbeat.NewRunner(cfg.StorageDir, sm, eng, tg)
 		go hb.CheckAndRun()
 	}
 
 	handleSignals()
 
-	c := cli.NewCLI(sm, exec, reg, eng)
+	c := cli.NewCLI(sm, reg, eng, cfg.DefaultClient)
 	if err := c.Run(*resume); err != nil {
 		fmt.Printf("CLI Error: %v\n", err)
 	}
 }
 
-func setupTelegram(cfg *config.Config, sm *session.Manager, exec *executor.Executor, reg *registry.Registry, eng *engine.Engine) *telegram.Telegram {
+func setupTelegram(cfg *config.Config, sm *session.Manager, reg *registry.Registry, eng *engine.Engine) *telegram.Telegram {
 	if cfg.TelegramToken == "" {
 		fmt.Println("Telegram token missing, running in CLI-only mode.")
 		return nil
@@ -70,9 +92,9 @@ func setupTelegram(cfg *config.Config, sm *session.Manager, exec *executor.Execu
 		AllowedIDs:     cfg.AllowedUserIDs,
 		UpdateInterval: cfg.UpdateInterval,
 		Sm:             sm,
-		Exec:           exec,
 		Reg:            reg,
 		Engine:         eng,
+		DefaultClient:  cfg.DefaultClient,
 	}
 	go tg.Poll()
 	fmt.Println("Telegram bot started.")

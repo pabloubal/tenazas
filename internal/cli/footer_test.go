@@ -9,8 +9,10 @@ import (
 
 	"github.com/google/uuid"
 
+	"path/filepath"
+
+	"tenazas/internal/client"
 	"tenazas/internal/engine"
-	"tenazas/internal/executor"
 	"tenazas/internal/models"
 	"tenazas/internal/session"
 )
@@ -139,8 +141,9 @@ func TestEngineRespectsSessionApprovalMode(t *testing.T) {
 	defer os.RemoveAll(storageDir)
 
 	sm := session.NewManager(storageDir)
-	exec := executor.NewExecutor("echo", storageDir)
-	eng := engine.NewEngine(sm, exec, 5)
+	c, _ := client.NewClient("echo", "echo", filepath.Join(storageDir, "tenazas.log"))
+	clients := map[string]client.Client{"echo": c}
+	eng := engine.NewEngine(sm, clients, "echo", 5)
 	_ = eng
 
 	sess := &models.Session{

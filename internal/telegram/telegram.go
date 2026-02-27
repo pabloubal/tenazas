@@ -24,9 +24,9 @@ type Telegram struct {
 	AllowedIDs     []int64
 	UpdateInterval int
 	Sm             *session.Manager
-	Exec           interface{} // kept for compatibility
 	Reg            *registry.Registry
 	Engine         models.EngineInterface
+	DefaultClient  string
 	lastUpdateID   int64
 	activeMessages map[string]*tgLiveStream
 	mu             sync.RWMutex
@@ -888,6 +888,8 @@ func (tg *Telegram) handleActionCallback(chatID int64, instanceID string, parts 
 		"run_command": func(s *models.Session) { tg.handleRunCommandAction(chatID, s) },
 		"new_session": func(s *models.Session) {
 			newSess, _ := tg.Sm.Create(s.CWD, "New Session")
+			newSess.Client = tg.DefaultClient
+			tg.Sm.Save(newSess)
 			tg.Reg.Set(instanceID, newSess.ID)
 			tg.send(chatID, "🆕 Started new session in <code>"+filepath.Base(s.CWD)+"</code>")
 		},
@@ -935,7 +937,11 @@ func (tg *Telegram) handleRunCommandAction(chatID int64, sess *models.Session) {
 
 func (tg *Telegram) focusSession(chatID int64, instanceID, sessID string) {
 	tg.Reg.Set(instanceID, sessID)
-	tg.send(chatID, "✅ Focused on session <code>"+sessID+"</code>")
+	info := "✅ Focused on session <code>" + sessID + "</code>"
+	if sess, err := tg.Sm.Load(sessID); err == nil && sess.Client != "" {
+		info += "\n🔧 Client: <b>" + sess.Client + "</b>"
+	}
+	tg.send(chatID, info)
 }
 
 func FormatHTML(s string) string {

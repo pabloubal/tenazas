@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"tenazas/internal/client"
 	"tenazas/internal/engine"
-	"tenazas/internal/executor"
 	"tenazas/internal/models"
 	"tenazas/internal/session"
 )
@@ -25,8 +25,9 @@ echo '{"type": "message", "content": "hb done"}'
 	scriptPath := filepath.Join(storageDir, "dummy.sh")
 	os.WriteFile(scriptPath, []byte(dummyScript), 0755)
 
-	exec := executor.NewExecutor(scriptPath, storageDir)
-	eng := engine.NewEngine(sm, exec, 5)
+	c, _ := client.NewClient("gemini", scriptPath, filepath.Join(storageDir, "tenazas.log"))
+	clients := map[string]client.Client{"gemini": c}
+	eng := engine.NewEngine(sm, clients, "gemini", 5)
 
 	hbDir := filepath.Join(storageDir, "heartbeats")
 	os.MkdirAll(hbDir, 0755)

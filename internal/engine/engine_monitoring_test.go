@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"tenazas/internal/events"
-	"tenazas/internal/executor"
 	"tenazas/internal/models"
 	"tenazas/internal/session"
 )
@@ -16,8 +15,7 @@ func TestEngineMonitoringEvents(t *testing.T) {
 	defer os.RemoveAll(storageDir)
 
 	sm := session.NewManager(storageDir)
-	exec := executor.NewExecutor("echo", storageDir) // Dummy
-	engine := NewEngine(sm, exec, 5)
+	engine := NewEngine(sm, newTestClient("echo", storageDir), "gemini", 5)
 
 	skill := &models.SkillGraph{
 		Name:         "mon-skill",
@@ -79,8 +77,7 @@ func TestEngineMonitoringBlockedEvent(t *testing.T) {
 	defer os.RemoveAll(storageDir)
 
 	sm := session.NewManager(storageDir)
-	exec := executor.NewExecutor("echo", storageDir)
-	engine := NewEngine(sm, exec, 5)
+	engine := NewEngine(sm, newTestClient("echo", storageDir), "gemini", 5)
 
 	skill := &models.SkillGraph{
 		Name:         "blocked-skill",

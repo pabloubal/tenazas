@@ -9,9 +9,11 @@ import (
 
 	"github.com/google/uuid"
 
+	"path/filepath"
+
+	"tenazas/internal/client"
 	"tenazas/internal/engine"
 	"tenazas/internal/events"
-	"tenazas/internal/executor"
 	"tenazas/internal/models"
 	"tenazas/internal/registry"
 	"tenazas/internal/session"
@@ -32,8 +34,9 @@ func TestCLIBasic(t *testing.T) {
 
 	sm := session.NewManager(tmpDir)
 	reg, _ := registry.NewRegistry(tmpDir)
-	exec := executor.NewExecutor("gemini", tmpDir)
-	eng := engine.NewEngine(sm, exec, 5)
+	c, _ := client.NewClient("gemini", "gemini", filepath.Join(tmpDir, "tenazas.log"))
+	clients := map[string]client.Client{"gemini": c}
+	eng := engine.NewEngine(sm, clients, "gemini", 5)
 
 	// Create a dummy session and audit log
 	sess := &models.Session{
@@ -46,7 +49,7 @@ func TestCLIBasic(t *testing.T) {
 	sm.AppendAudit(sess, events.AuditEntry{Type: events.AuditInfo, Content: "Test log entry"})
 
 	var out bytes.Buffer
-	cli := NewCLI(sm, exec, reg, eng)
+	cli := NewCLI(sm, reg, eng, "gemini")
 	cli.Out = &out
 
 	// Directly test the command handling logic instead of the full REPL
