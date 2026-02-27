@@ -49,19 +49,24 @@ type StateDef struct {
 
 // Session Metadata (.meta.json)
 type Session struct {
-	ID              string            `json:"id"`
-	CWD             string            `json:"cwd"`
-	Title           string            `json:"title"`
-	SkillName       string            `json:"skill_name,omitempty"`
-	LastUpdated     time.Time         `json:"last_updated"`
-	ActiveNode      string            `json:"active_node"`
-	RoleCache       map[string]string `json:"role_cache"` // Maps "planner" -> "gemini-sid-1"
-	RetryCount      int               `json:"retry_count"`
-	LoopCount       int               `json:"loop_count"` // Global loop counter
-	Status          string            `json:"status"`     // "running", "intervention_required", "completed", "failed", "idle"
-	PendingFeedback string            `json:"pending_feedback,omitempty"` // Context for next prompt
-	Yolo            bool              `json:"yolo"`
-	ApprovalMode    string            `json:"approval_mode,omitempty"` // "plan", "auto_edit", "yolo"
+	ID                  string            `json:"id"`
+	CWD                 string            `json:"cwd"`
+	Title               string            `json:"title"`
+	SkillName           string            `json:"skill_name,omitempty"`
+	LastUpdated         time.Time         `json:"last_updated"`
+	ActiveNode          string            `json:"active_node"`
+	RoleCache           map[string]string `json:"role_cache"` // Maps "planner" -> "gemini-sid-1"
+	RetryCount          int               `json:"retry_count"`
+	LoopCount           int               `json:"loop_count"`                 // Global loop counter
+	Status              string            `json:"status"`                     // "running", "intervention_required", "completed", "failed", "idle"
+	PendingFeedback     string            `json:"pending_feedback,omitempty"` // Context for next prompt
+	Yolo                bool              `json:"yolo"`
+	Archived            bool              `json:"archived,omitempty"`
+	ApprovalMode        string            `json:"approval_mode,omitempty"` // "plan", "auto_edit", "yolo"
+	MonitoringChatID    int64             `json:"monitoring_chat_id,omitempty"`
+	MonitoringMessageID int64             `json:"monitoring_message_id,omitempty"`
+	TaskID              string            `json:"task_id,omitempty"`
+	Ephemeral           bool              `json:"ephemeral,omitempty"`
 }
 
 // EnsureLocalDir creates a .tenazas directory in the session's CWD
@@ -72,7 +77,6 @@ func (s *Session) EnsureLocalDir() (string, error) {
 	}
 	return localDir, nil
 }
-
 
 // Audit Entry (.audit.jsonl)
 type AuditEntry struct {
@@ -88,10 +92,18 @@ type AuditFormatter interface {
 	Format(entry AuditEntry) string
 }
 
+type EngineInterface interface {
+	ExecutePrompt(sess *Session, prompt string)
+	ExecuteCommand(sess *Session, cmd string)
+	Run(skill *SkillGraph, sess *Session)
+	ResolveIntervention(id, action string)
+	IsRunning(sessionID string) bool
+}
+
 // Heartbeat Definition
 type Heartbeat struct {
-	Name     string `json:"name"`
-	Interval string `json:"interval"` // Cron string like "@hourly" or "every 5m"
-	Path     string `json:"path"`
-	Skill    string `json:"skill"`
+	Name     string   `json:"name"`
+	Interval string   `json:"interval"` // Cron string like "@hourly" or "every 5m"
+	Path     string   `json:"path"`
+	Skills   []string `json:"skills"`
 }

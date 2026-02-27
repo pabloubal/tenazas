@@ -20,9 +20,9 @@ func TestSessionManagerSaveAndLoad(t *testing.T) {
 	cwd, _ := os.Getwd()
 
 	sess := &Session{
-		ID:  "test-session-123",
-		CWD: cwd,
-		Title: "Test Session",
+		ID:        "test-session-123",
+		CWD:       cwd,
+		Title:     "Test Session",
 		RoleCache: make(map[string]string),
 	}
 
@@ -119,5 +119,72 @@ func TestSessionManagerGetLatest(t *testing.T) {
 
 	if latest.ID != "new" {
 		t.Errorf("expected latest session to be 'new', got %s", latest.ID)
+	}
+}
+
+func TestSessionManagerArchive(t *testing.T) {
+	storageDir, _ := os.MkdirTemp("", "tenazas-test-archive-*")
+	defer os.RemoveAll(storageDir)
+
+	sm := NewSessionManager(storageDir)
+	cwd, _ := os.Getwd()
+
+	s1 := &Session{ID: "sess-1", CWD: cwd, Title: "Active Session"}
+	s2 := &Session{ID: "sess-2", CWD: cwd, Title: "Archived Session"}
+
+	sm.Save(s1)
+	sm.Save(s2)
+
+	// Test Archive
+	err := sm.Archive("sess-2")
+	if err != nil {
+		t.Fatalf("failed to archive session: %v", err)
+	}
+
+	// Verify archived session is NOT in List
+	list, total, err := sm.List(0, 10)
+	if err != nil {
+		t.Fatalf("failed to list sessions: %v", err)
+	}
+	if total != 1 {
+		t.Errorf("expected 1 session in list after archiving, got %d", total)
+	}
+	if list[0].ID != "sess-1" {
+		t.Errorf("expected sess-1 in list, got %s", list[0].ID)
+	}
+
+	// Verify archived session can still be Load-ed
+	loaded, err := sm.Load("sess-2")
+	if err != nil {
+		t.Fatalf("failed to load archived session: %v", err)
+	}
+	if !loaded.Archived {
+		t.Errorf("expected loaded session to have Archived=true")
+	}
+}
+
+func TestSessionManagerRename(t *testing.T) {
+	storageDir, _ := os.MkdirTemp("", "tenazas-test-rename-*")
+	defer os.RemoveAll(storageDir)
+
+	sm := NewSessionManager(storageDir)
+	cwd, _ := os.Getwd()
+
+	s1 := &Session{ID: "sess-1", CWD: cwd, Title: "Old Title"}
+	sm.Save(s1)
+
+	// Test Rename
+	err := sm.Rename("sess-1", "New Title")
+	if err != nil {
+		t.Fatalf("failed to rename session: %v", err)
+	}
+
+	// Verify Title change via Load
+	loaded, err := sm.Load("sess-1")
+	if err != nil {
+		t.Fatalf("failed to load session: %v", err)
+	}
+	if loaded.Title != "New Title" {
+		t.Errorf("expected title 'New Title', got %s", loaded.Title)
 	}
 }

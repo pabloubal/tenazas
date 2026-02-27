@@ -91,3 +91,39 @@ func TestRegistryVerbosity(t *testing.T) {
 		t.Errorf("expected HIGH verbosity, got %s", state.Verbosity)
 	}
 }
+
+func TestRegistryPendingActions(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "tenazas-registry-p-*")
+	defer os.RemoveAll(tmpDir)
+
+	reg, _ := NewRegistry(tmpDir)
+	instanceID := "test-instance"
+
+	// Test SetPending
+	err := reg.SetPending(instanceID, "rename", "sess-123")
+	if err != nil {
+		t.Fatalf("failed to set pending action: %v", err)
+	}
+
+	state, err := reg.Get(instanceID)
+	if err != nil {
+		t.Fatalf("failed to get state: %v", err)
+	}
+	if state.PendingAction != "rename" || state.PendingData != "sess-123" {
+		t.Errorf("incorrect pending action: got %v, %v", state.PendingAction, state.PendingData)
+	}
+
+	// Test ClearPending
+	err = reg.ClearPending(instanceID)
+	if err != nil {
+		t.Fatalf("failed to clear pending action: %v", err)
+	}
+
+	state, err = reg.Get(instanceID)
+	if err != nil {
+		t.Fatalf("failed to get state: %v", err)
+	}
+	if state.PendingAction != "" || state.PendingData != "" {
+		t.Errorf("pending action not cleared: got %v, %v", state.PendingAction, state.PendingData)
+	}
+}

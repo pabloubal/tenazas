@@ -1,8 +1,8 @@
 package main
 
 import (
-	"testing"
 	"strings"
+	"testing"
 )
 
 func TestTelegramIsAllowed(t *testing.T) {
@@ -24,7 +24,7 @@ func TestTelegramIsAllowed(t *testing.T) {
 func TestTelegramFormatHTML(t *testing.T) {
 	input := "Hello **world** and `code` and ```block```"
 	output := formatHTML(input)
-	
+
 	if !strings.Contains(output, "<b>world</b>") {
 		t.Errorf("expected <b>world</b>, got %s", output)
 	}

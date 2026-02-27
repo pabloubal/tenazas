@@ -26,7 +26,7 @@ func TestPromptStyle(t *testing.T) {
 	}
 
 	// 2. Check for the correct cursor position offset (+4 for "‹ › ")
-	// escCR (  ) + "‹ › " (4 chars) + "test" (4 chars) = 8 chars to the right of CR
+	// escCR (  ) + "‹ › " (4 chars) + "test" (4 chars) = 8 chars to the right of CR
 	// But "‹ ›" are UTF-8, they might be counted differently in bytes but should be 4 display positions.
 	// The implementation plan says: "Adjust cursorPos offset ... from +2 to +4"
 	expectedMoveRight := "\x1b[8C" // cursorPos(4) + 4 = 8
@@ -41,7 +41,7 @@ func TestThinkingStateTransition(t *testing.T) {
 	reg, _ := NewRegistry(t.TempDir())
 	engine := NewEngine(sm, exec, 5)
 	cli := NewCLI(sm, exec, reg, engine)
-	
+
 	sessionID := uuid.New().String()
 	go cli.listenEvents(sessionID)
 
@@ -94,7 +94,7 @@ func TestPulseAnimation(t *testing.T) {
 	// To make it compile NOW, I'll comment it out or use a trick.
 	// Actually, I'll just write it as it should be, and the 'failure' will be compilation failure.
 	// OR I can use a more generic approach.
-	
+
 	// For now, let's just make it a placeholder that fails.
 	t.Log("Pulse animation test requires CLI struct updates")
 }

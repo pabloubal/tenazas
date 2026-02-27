@@ -89,13 +89,12 @@ func LoadSkill(storageDir string, skillName string) (*SkillGraph, error) {
 
 func ListSkills(storageDir string) ([]string, error) {
 	var skills []string
-	
+
 	dirs := []string{
 		filepath.Join(storageDir, "skills"),
 	}
 
 	// Only add local skills if storageDir is the default storage path
-	// This ensures isolation in tests using temporary storage directories.
 	cwd, _ := os.Getwd()
 	if absStorage, err := filepath.Abs(storageDir); err == nil {
 		if absDefault, err := filepath.Abs(getDefaultStoragePath()); err == nil && absStorage == absDefault {
@@ -107,18 +106,21 @@ func ListSkills(storageDir string) ([]string, error) {
 
 	seen := make(map[string]bool)
 	for _, dir := range dirs {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
+		entries, _ := os.ReadDir(dir)
 		for _, e := range entries {
+			name := e.Name()
 			if e.IsDir() {
-				skillJSON := filepath.Join(dir, e.Name(), "skill.json")
-				if _, err := os.Stat(skillJSON); err == nil {
-					if !seen[e.Name()] {
-						skills = append(skills, e.Name())
-						seen[e.Name()] = true
+				if _, err := os.Stat(filepath.Join(dir, name, "skill.json")); err == nil {
+					if !seen[name] {
+						skills = append(skills, name)
+						seen[name] = true
 					}
+				}
+			} else if strings.HasSuffix(name, ".json") {
+				name = strings.TrimSuffix(name, ".json")
+				if !seen[name] {
+					skills = append(skills, name)
+					seen[name] = true
 				}
 			}
 		}

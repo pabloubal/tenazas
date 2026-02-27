@@ -9,8 +9,10 @@ import (
 )
 
 type InstanceState struct {
-	SessionID string `json:"session_id"`
-	Verbosity string `json:"verbosity"` // "LOW", "MEDIUM", "HIGH"
+	SessionID     string `json:"session_id"`
+	Verbosity     string `json:"verbosity"` // "LOW", "MEDIUM", "HIGH"
+	PendingAction string `json:"pending_action,omitempty"`
+	PendingData   string `json:"pending_data,omitempty"`
 }
 
 type Registry struct {
@@ -58,34 +60,65 @@ func (r *Registry) withLock(fn func() error) error {
 	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 
 	// Sync from disk before modification
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.storage.ReadJSON("registry.json", &r.instances)
 	return fn()
 }
 
-func (r *Registry) Set(instanceID, sessionID string) error {
+func (r *Registry) update(instanceID string, fn func(*InstanceState) bool) error {
 	return r.withLock(func() error {
 		state := r.instances[instanceID]
-		if state.SessionID == sessionID {
-			return nil // No change
+		if fn(&state) {
+			r.instances[instanceID] = state
+			return r.storage.WriteJSON("registry.json", r.instances)
 		}
-		state.SessionID = sessionID
-		if state.Verbosity == "" {
-			state.Verbosity = "MEDIUM"
+		return nil
+	})
+}
+
+func (r *Registry) Set(instanceID, sessionID string) error {
+	return r.update(instanceID, func(s *InstanceState) bool {
+		if s.SessionID == sessionID {
+			return false
 		}
-		r.instances[instanceID] = state
-		return r.storage.WriteJSON("registry.json", r.instances)
+		s.SessionID = sessionID
+		if s.Verbosity == "" {
+			s.Verbosity = "MEDIUM"
+		}
+		return true
 	})
 }
 
 func (r *Registry) SetVerbosity(instanceID, verbosity string) error {
-	return r.withLock(func() error {
-		state := r.instances[instanceID]
-		if state.Verbosity == verbosity {
-			return nil
+	return r.update(instanceID, func(s *InstanceState) bool {
+		if s.Verbosity == verbosity {
+			return false
 		}
-		state.Verbosity = verbosity
-		r.instances[instanceID] = state
-		return r.storage.WriteJSON("registry.json", r.instances)
+		s.Verbosity = verbosity
+		return true
+	})
+}
+
+func (r *Registry) SetPending(instanceID, action, data string) error {
+	return r.update(instanceID, func(s *InstanceState) bool {
+		if s.PendingAction == action && s.PendingData == data {
+			return false
+		}
+		s.PendingAction = action
+		s.PendingData = data
+		return true
+	})
+}
+
+func (r *Registry) ClearPending(instanceID string) error {
+	return r.update(instanceID, func(s *InstanceState) bool {
+		if s.PendingAction == "" && s.PendingData == "" {
+			return false
+		}
+		s.PendingAction = ""
+		s.PendingData = ""
+		return true
 	})
 }
 

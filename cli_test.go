@@ -19,7 +19,6 @@ func isTTY(f *os.File) bool {
 	return (fileInfo.Mode() & os.ModeCharDevice) != 0
 }
 
-
 func TestCLIBasic(t *testing.T) {
 	tmpDir, _ := os.MkdirTemp("", "tenazas-cli-test-*")
 	defer os.RemoveAll(tmpDir)

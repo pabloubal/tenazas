@@ -16,12 +16,12 @@ func TestImmersive_SetupTerminalRegions(t *testing.T) {
 	// We can't easily mock getTerminalSize here, but we can check the relative difference
 	// or assume a default if we can't get it.
 	// However, we know drawerHeight is 8.
-	
+
 	// Non-immersive: only 1 line reserved for footer
 	cli.IsImmersive = false
 	cli.setupTerminal()
 	outputNon := out.String()
-	
+
 	out.Reset()
 	// Immersive: 10 lines reserved (Footer + Drawer + Fixed Prompt)
 	cli.IsImmersive = true
@@ -31,7 +31,7 @@ func TestImmersive_SetupTerminalRegions(t *testing.T) {
 	// Parse the scrolling region escape sequence: \x1b[%d;%dr
 	var r1Non, r2Non int
 	fmt.Sscanf(strings.TrimPrefix(outputNon, "\x1b["), "%d;%dr", &r1Non, &r2Non)
-	
+
 	var r1Imm, r2Imm int
 	fmt.Sscanf(strings.TrimPrefix(outputImm, "\x1b["), "%d;%dr", &r1Imm, &r2Imm)
 
@@ -87,7 +87,7 @@ func TestImmersive_DrawerBoundary(t *testing.T) {
 	if err != nil {
 		rows = 24
 	}
-	
+
 	// First thought should be at rows - drawerHeight (e.g. 24 - 8 = 16)
 	expectedRow := rows - drawerHeight
 	expectedMove := fmt.Sprintf("\x1b[%d;1H", expectedRow)

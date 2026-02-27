@@ -28,7 +28,7 @@ func TestEngineThoughtEvents(t *testing.T) {
 
 	// Trigger chunks via Engine's onChunk
 	parse := engine.onChunk(sess, state)
-	
+
 	// Simulating streaming chunks
 	chunks := []string{"Hello ", "<tho", "ught>thinking</thou", "ght> World"}
 	for _, c := range chunks {
@@ -51,14 +51,18 @@ collect:
 					gotThoughts = append(gotThoughts, audit.Content)
 				}
 			}
-			
+
 			// We expect "Hello ", " World" (possibly split) and "thinking"
 			// Actually "Hello " and " World" should be at least 2 chunks.
 			// "thinking" should be 1 chunk.
 			combinedText := ""
-			for _, c := range gotChunks { combinedText += c }
+			for _, c := range gotChunks {
+				combinedText += c
+			}
 			combinedThoughts := ""
-			for _, th := range gotThoughts { combinedThoughts += th }
+			for _, th := range gotThoughts {
+				combinedThoughts += th
+			}
 
 			if combinedText == "Hello  World" && combinedThoughts == "thinking" {
 				break collect

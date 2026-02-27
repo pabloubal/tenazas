@@ -11,6 +11,7 @@ const (
 	EventAudit        EventType = "audit"
 	EventIntervention EventType = "intervention"
 	EventStatus       EventType = "status"
+	EventTaskStatus   EventType = "task_status"
 )
 
 const (
@@ -23,6 +24,18 @@ const (
 	AuditStatus       = "status"
 	AuditInfo         = "info"
 )
+
+const (
+	TaskStateStarted   = "TASK_STARTED"
+	TaskStateBlocked   = "TASK_BLOCKED"
+	TaskStateCompleted = "TASK_COMPLETED"
+	TaskStateFailed    = "TASK_FAILED"
+)
+
+type TaskStatusPayload struct {
+	State   string            `json:"state"`
+	Details map[string]string `json:"details"`
+}
 
 type Event struct {
 	Type      EventType

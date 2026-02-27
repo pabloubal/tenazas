@@ -54,7 +54,7 @@ func TestSkillIsolation_Loading(t *testing.T) {
 		t.Fatalf("Failed to load skill: %v", err)
 	}
 	// Note: We need to add BaseDir to SkillGraph struct in models.go
-	// For now, this test will fail to compile if we don't add it, 
+	// For now, this test will fail to compile if we don't add it,
 	// but the instruction was DO NOT write implementation code.
 	// However, I need the test to be valid Go code that fails during execution.
 }
@@ -69,7 +69,7 @@ func TestResolveInstruction_PathSafety(t *testing.T) {
 	skillBaseDir := filepath.Join(tmpDir, "my-skill")
 	os.MkdirAll(skillBaseDir, 0755)
 	os.WriteFile(filepath.Join(skillBaseDir, "instructions.md"), []byte("my instruction"), 0644)
-	
+
 	secretFile := filepath.Join(tmpDir, "secret.txt")
 	os.WriteFile(secretFile, []byte("sensitive"), 0644)
 
@@ -123,7 +123,7 @@ func TestSkillRegistry_ManagementIsolation(t *testing.T) {
 	}
 
 	sm := NewSessionManager(tmpDir)
-	
+
 	// Refresh registry should discover skills
 	err = sm.RefreshSkillRegistry()
 	if err != nil {

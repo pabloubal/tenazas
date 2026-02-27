@@ -12,7 +12,7 @@ func TestLoadConfig(t *testing.T) {
 
 	os.Setenv("TENAZAS_STORAGE_DIR", tmpDir)
 	defer os.Unsetenv("TENAZAS_STORAGE_DIR")
-	
+
 	os.Setenv("TENAZAS_TG_TOKEN", "test-token")
 	defer os.Unsetenv("TENAZAS_TG_TOKEN")
 

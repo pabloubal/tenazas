@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 type Engine struct {
@@ -40,6 +42,7 @@ func (e *Engine) Run(skill *SkillGraph, sess *Session) {
 	e.running.Store(sess.ID, true)
 	defer e.running.Delete(sess.ID)
 
+	e.publishTaskStatus(sess.ID, TaskStateStarted, nil)
 	e.initializeExecution(skill, sess)
 
 	for e.shouldContinue(sess) {
@@ -93,12 +96,25 @@ func (e *Engine) terminate(sess *Session, status, reason string) {
 	sess.Status = status
 	e.log(sess, AuditStatus, "engine", fmt.Sprintf("Status: %s - %s", status, reason))
 	e.sm.Save(sess)
+
+	state := TaskStateCompleted
+	if status == StatusFailed {
+		state = TaskStateFailed
+	}
+	e.publishTaskStatus(sess.ID, state, map[string]string{"reason": reason})
 }
 
 func (e *Engine) awaitIntervention(skill *SkillGraph, state *StateDef, sess *Session) {
 	e.log(sess, AuditIntervention, "engine", fmt.Sprintf("Waiting for intervention at %s", sess.ActiveNode))
+
+	e.publishTaskStatus(sess.ID, TaskStateBlocked, map[string]string{
+		"node":        sess.ActiveNode,
+		"instruction": state.Instruction,
+		"reason":      sess.PendingFeedback,
+	})
+
 	action := <-e.getInterventionChan(sess.ID)
-	
+
 	switch action {
 	case "retry":
 		sess.RetryCount = 0
@@ -114,29 +130,40 @@ func (e *Engine) awaitIntervention(skill *SkillGraph, state *StateDef, sess *Ses
 	e.sm.Save(sess)
 }
 
-func (e *Engine) executeActionLoop(skill *SkillGraph, state *StateDef, sess *Session) error {
-	// Pre-Action
+func (e *Engine) publishTaskStatus(sessID string, state string, details map[string]string) {
+	GlobalBus.Publish(Event{
+		Type:      EventTaskStatus,
+		SessionID: sessID,
+		Payload: TaskStatusPayload{
+			State:   state,
+			Details: details,
+		},
+	})
+}
+
+func (e *Engine) executeActionLoop(skill *SkillGraph, state *StateDef, sess *Session) {
+	// 1. Pre-Action
 	if state.PreActionCmd != "" && sess.RetryCount == 0 {
 		if exitCode, output := e.runShell(state.PreActionCmd, sess.CWD); exitCode != 0 {
 			e.log(sess, AuditCmdResult, "engine", fmt.Sprintf("pre_action_cmd failed (Exit Code: %d): %s", exitCode, output))
 			e.handleRetry(state, sess, fmt.Sprintf("Pre-action command failed (Exit Code: %d):\n%s", exitCode, output))
-			return nil
+			return
 		}
 	}
 
-	// LLM Step
+	// 2. LLM Step
 	response, err := e.callLLM(state, sess)
 	if err != nil {
 		e.handleRetry(state, sess, "Gemini execution error: "+err.Error())
-		return nil
+		return
 	}
 	sess.PendingFeedback = "" // Clear feedback only after successful LLM consumption
 	e.log(sess, AuditLLMResponse, state.SessionRole, response)
 
-	// Post-Action / Verification
+	// 3. Post-Action / Verification
 	if state.VerifyCmd == "" {
 		e.completeState(state, sess, "")
-		return nil
+		return
 	}
 
 	exitCode, output := e.runShell(state.VerifyCmd, sess.CWD)
@@ -147,7 +174,25 @@ func (e *Engine) executeActionLoop(skill *SkillGraph, state *StateDef, sess *Ses
 	} else {
 		e.handleLoopFailure(skill, state, sess, exitCode, output)
 	}
-	return nil
+}
+
+func (e *Engine) executeTool(state *StateDef, sess *Session) {
+	e.log(sess, AuditInfo, "engine", "Executing tool: "+state.Command)
+	exitCode, out := e.runShell(state.Command, sess.CWD)
+	e.log(sess, AuditCmdResult, "engine", fmt.Sprintf("Exit Code: %d\x0aOutput: %s", exitCode, out))
+
+	sess.RetryCount = 0
+	sess.PendingFeedback = out
+
+	if exitCode == 0 {
+		sess.ActiveNode = state.Next
+	} else if state.OnFailRoute != "" {
+		sess.ActiveNode = state.OnFailRoute
+	} else {
+		e.terminate(sess, StatusFailed, fmt.Sprintf("Tool failed (Exit Code: %d): %s", exitCode, out))
+		return
+	}
+	e.sm.Save(sess)
 }
 
 func (e *Engine) callLLM(state *StateDef, sess *Session) (string, error) {
@@ -181,11 +226,16 @@ func (e *Engine) handleRetry(state *StateDef, sess *Session, feedback string) {
 
 func (e *Engine) handleLoopFailure(skill *SkillGraph, state *StateDef, sess *Session, exitCode int, output string) {
 	sess.LoopCount++
-	feedback := strings.ReplaceAll(state.OnFailPrompt, "{{exit_code}}", fmt.Sprintf("%d", exitCode))
+
+	feedback := state.OnFailPrompt
+	if feedback == "" {
+		feedback = "Command failed with exit code {{exit_code}}.\x0a\x0aOutput:\x0a{{output}}"
+	}
+	feedback = strings.ReplaceAll(feedback, "{{exit_code}}", fmt.Sprintf("%d", exitCode))
+	feedback = strings.ReplaceAll(feedback, "{{output}}", output)
 	feedback = strings.ReplaceAll(feedback, "{{stderr}}", output)
 	feedback = strings.ReplaceAll(feedback, "{{stdout}}", output)
-	feedback = strings.ReplaceAll(feedback, "{{output}}", output)
-	
+
 	limit := e.maxLoops
 	if skill.MaxLoops > 0 {
 		limit = skill.MaxLoops
@@ -202,7 +252,9 @@ func (e *Engine) handleLoopFailure(skill *SkillGraph, state *StateDef, sess *Ses
 
 func (e *Engine) transitionToFailRoute(skill *SkillGraph, state *StateDef, sess *Session, feedback string) {
 	if state.OnFailRoute == "" {
-		e.terminate(sess, StatusFailed, "No on_fail_route for state "+sess.ActiveNode)
+		sess.Status = StatusIntervention
+		sess.PendingFeedback = feedback
+		e.sm.Save(sess)
 		return
 	}
 	e.log(sess, AuditInfo, "engine", fmt.Sprintf("Fail route: %s (Loop %d)", state.OnFailRoute, sess.LoopCount))
@@ -227,7 +279,7 @@ func (e *Engine) buildPrompt(state *StateDef, sess *Session) string {
 	if sess.PendingFeedback == "" {
 		return instruction
 	}
-	
+
 	// Handle special resume feedback
 	if sess.PendingFeedback == "Session resumed. Please continue from where you left off." {
 		return sess.PendingFeedback
@@ -239,7 +291,9 @@ func (e *Engine) buildPrompt(state *StateDef, sess *Session) string {
 func (e *Engine) onChunk(sess *Session, state *StateDef) func(string) {
 	parser := &thoughtParser{
 		onThought: func(t string) { e.log(sess, AuditLLMThought, state.SessionRole, t) },
-		onText:    func(t string) { e.sm.AppendAudit(sess, AuditEntry{Type: AuditLLMChunk, Source: state.SessionRole, Content: t}) },
+		onText: func(t string) {
+			e.sm.AppendAudit(sess, AuditEntry{Type: AuditLLMChunk, Source: state.SessionRole, Content: t})
+		},
 	}
 	return parser.parse
 }
@@ -259,36 +313,41 @@ func (p *thoughtParser) parse(chunk string) {
 
 	p.buffer += chunk
 	for {
-		targetTag, emit := "<thought>", p.onText
+		target := "<thought>"
 		if p.inThought {
-			targetTag, emit = "</thought>", p.onThought
+			target = "</thought>"
 		}
 
-		idx := strings.Index(p.buffer, "<")
+		idx := strings.Index(p.buffer, target)
 		if idx == -1 {
-			emit(p.buffer)
+			possibleTagStart := strings.LastIndexAny(p.buffer, "<")
+			if possibleTagStart != -1 {
+				remaining := p.buffer[possibleTagStart:]
+				if strings.HasPrefix(target, remaining) {
+					p.emit(p.buffer[:possibleTagStart])
+					p.buffer = remaining
+					return
+				}
+			}
+			p.emit(p.buffer)
 			p.buffer = ""
 			return
 		}
 
-		if idx > 0 {
-			emit(p.buffer[:idx])
-			p.buffer = p.buffer[idx:]
-		}
+		p.emit(p.buffer[:idx])
+		p.buffer = p.buffer[idx+len(target):]
+		p.inThought = !p.inThought
+	}
+}
 
-		// Buffer now starts with "<"
-		if strings.HasPrefix(p.buffer, targetTag) {
-			p.buffer = p.buffer[len(targetTag):]
-			p.inThought = !p.inThought
-			continue
-		}
-
-		if strings.HasPrefix(targetTag, p.buffer) {
-			return
-		}
-
-		emit(p.buffer[:1])
-		p.buffer = p.buffer[1:]
+func (p *thoughtParser) emit(text string) {
+	if text == "" {
+		return
+	}
+	if p.inThought {
+		p.onThought(text)
+	} else {
+		p.onText(text)
 	}
 }
 
@@ -296,11 +355,7 @@ func (p *thoughtParser) flush() {
 	if p.buffer == "" {
 		return
 	}
-	if p.inThought {
-		p.onThought(p.buffer)
-	} else {
-		p.onText(p.buffer)
-	}
+	p.emit(p.buffer)
 	p.buffer = ""
 }
 
@@ -311,23 +366,41 @@ func (e *Engine) onSID(sess *Session, state *StateDef) func(string) {
 	}
 }
 
-func (e *Engine) executeTool(state *StateDef, sess *Session) {
-	e.log(sess, AuditInfo, "engine", "Executing tool: "+state.Command)
-	exitCode, out := e.runShell(state.Command, sess.CWD)
-	e.log(sess, AuditCmdResult, "engine", fmt.Sprintf("Exit Code: %d\x0aOutput: %s", exitCode, out))
-	
-	sess.RetryCount = 0
-	sess.PendingFeedback = out
-	sess.ActiveNode = state.Next
-	e.sm.Save(sess)
+func (e *Engine) ExecuteCommand(sess *Session, cmd string) {
+	e.resumeAndRun(sess, func() {
+		e.log(sess, AuditInfo, "user", fmt.Sprintf("User approved command: %s", cmd))
+		exitCode, output := e.runShell(cmd, sess.CWD)
+		e.log(sess, AuditCmdResult, "engine", fmt.Sprintf("Exit Code: %d\x0a%s", exitCode, output))
+		e.executePromptInternal(sess, output)
+	})
 }
 
 func (e *Engine) ExecutePrompt(sess *Session, prompt string) {
+	e.resumeAndRun(sess, func() {
+		e.executePromptInternal(sess, prompt)
+	})
+}
+
+func (e *Engine) resumeAndRun(sess *Session, f func()) {
+	wasIntervention := sess.Status == StatusIntervention
+	if sess.Status != StatusRunning {
+		sess.Status = StatusRunning
+		e.sm.Save(sess)
+	}
+
+	f()
+
+	if wasIntervention {
+		e.ResolveIntervention(sess.ID, "retry")
+	}
+}
+
+func (e *Engine) executePromptInternal(sess *Session, prompt string) {
 	e.log(sess, AuditLLMPrompt, "user", prompt)
 
 	geminiSID := sess.RoleCache["default"]
 	onChunk := e.onChunk(sess, &StateDef{SessionRole: "gemini"})
-	_, err := e.exec.Run(geminiSID, prompt, sess.CWD, sess.ApprovalMode, sess.Yolo, onChunk, func(newSID string) {
+	resp, err := e.exec.Run(geminiSID, prompt, sess.CWD, sess.ApprovalMode, sess.Yolo, onChunk, func(newSID string) {
 		sess.RoleCache["default"] = newSID
 		e.sm.Save(sess)
 	})
@@ -335,6 +408,8 @@ func (e *Engine) ExecutePrompt(sess *Session, prompt string) {
 
 	if err != nil {
 		e.log(sess, AuditInfo, "engine", "LLM Error: "+err.Error())
+	} else {
+		e.log(sess, AuditLLMResponse, "gemini", resp)
 	}
 }
 
@@ -372,14 +447,20 @@ func (e *Engine) resolveInstruction(instr, cwd string) string {
 }
 
 func (e *Engine) runShell(cmdStr, cwd string) (int, string) {
-	cmd := exec.Command("bash", "-c", cmdStr)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "bash", "-c", cmdStr)
 	cmd.Dir = cwd
 	out, err := cmd.CombinedOutput()
-	
+
 	exitCode := 0
 	if err != nil {
 		if exitError, ok := err.(*exec.ExitError); ok {
 			exitCode = exitError.ExitCode()
+		} else if ctx.Err() == context.DeadlineExceeded {
+			exitCode = 124 // Standard for timeout
+			out = append(out, []byte("\nError: Command timed out after 30s")...)
 		} else {
 			exitCode = 1
 		}
@@ -388,7 +469,6 @@ func (e *Engine) runShell(cmdStr, cwd string) (int, string) {
 	strOut := string(out)
 	const maxLen = 32000
 	if len(strOut) > maxLen {
-		// Keep a bit of the beginning and the end
 		strOut = strOut[:1000] + "\x0a...[TRUNCATED]...\x0a" + strOut[len(strOut)-(maxLen-1100):]
 	}
 	return exitCode, strOut
@@ -407,7 +487,7 @@ func (e *Engine) getInterventionChan(sessID string) chan string {
 	defer e.intervsMux.Unlock()
 	ch, ok := e.intervs[sessID]
 	if !ok {
-		ch = make(chan string)
+		ch = make(chan string, 1)
 		e.intervs[sessID] = ch
 	}
 	return ch
@@ -417,8 +497,11 @@ func (e *Engine) ResolveIntervention(sessID, action string) {
 	e.intervsMux.RLock()
 	ch, ok := e.intervs[sessID]
 	e.intervsMux.RUnlock()
-	
+
 	if ok {
-		ch <- action
+		select {
+		case ch <- action:
+		default:
+		}
 	}
 }

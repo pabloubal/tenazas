@@ -239,7 +239,7 @@ func (c *CLI) selectSession() (*Session, error) {
 	selectedIndex := 0
 
 	for {
-		sessions, total, err := c.Sm.List(page, pageSize)
+		sessions, total, err := c.Sm.ListActive(page, pageSize)
 		if err != nil {
 			return nil, fmt.Errorf("could not list sessions: %v", err)
 		}

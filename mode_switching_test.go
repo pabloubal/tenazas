@@ -83,7 +83,7 @@ func TestShiftTabDetection(t *testing.T) {
 	}
 	cli.sess = sess
 
-	// Simulate Shift+Tab (\x1b[Z) then Enter () and then Ctrl+C (\x03)
+	// Simulate Shift+Tab (\x1b[Z) then Enter () and then Ctrl+C (\x03)
 	input := "\x1b[Z\x03"
 	cli.In = strings.NewReader(input)
 	var out bytes.Buffer

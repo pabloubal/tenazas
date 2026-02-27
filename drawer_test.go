@@ -33,7 +33,7 @@ func TestAnsiFormatter_Thought(t *testing.T) {
 func TestCLI_DoubleTabToggle(t *testing.T) {
 	var out bytes.Buffer
 	cli := &CLI{Out: &out}
-	
+
 	// First tab
 	cli.handleTab()
 	if cli.IsImmersive {
@@ -65,10 +65,10 @@ func TestCLI_DoubleTabToggle(t *testing.T) {
 func TestCLI_AddThought(t *testing.T) {
 	var out bytes.Buffer
 	cli := &CLI{Out: &out}
-	
+
 	// Add 10 thoughts, should only keep last 8
 	for i := 1; i <= 10; i++ {
-		cli.addThought(string(rune('0'+i)))
+		cli.addThought(string(rune('0' + i)))
 	}
 
 	if len(cli.drawer) != 8 {
@@ -91,7 +91,7 @@ func TestCLI_DrawerRendering(t *testing.T) {
 		drawer:      []string{"thought 1", "thought 2"},
 	}
 
-	// Mocking getTerminalSize is hard without refactoring, 
+	// Mocking getTerminalSize is hard without refactoring,
 	// but we can check if the escape sequences for drawing are present.
 	cli.drawDrawer()
 
@@ -137,13 +137,13 @@ func TestCLI_ListenEvents_ThoughtRouting(t *testing.T) {
 	cli := &CLI{
 		IsImmersive: true,
 	}
-	
+
 	// The plan says listenEvents uses GlobalBus.Subscribe()
 	// We can publish to it.
-	
+
 	// Start listening in background
 	go cli.listenEvents("test-session")
-	
+
 	// Publish a thought event
 	GlobalBus.Publish(Event{
 		Type:      EventAudit,
@@ -153,7 +153,7 @@ func TestCLI_ListenEvents_ThoughtRouting(t *testing.T) {
 			Content: "This should be routed",
 		},
 	})
-	
+
 	// Wait a bit and check if it reached the drawer
 	// Note: We might need a small timeout or retry
 	time.Sleep(100 * time.Millisecond)

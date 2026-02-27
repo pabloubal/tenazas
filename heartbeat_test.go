@@ -22,15 +22,16 @@ echo '{"type": "message", "content": "hb done"}'
 
 	exec := NewExecutor(scriptPath, storageDir)
 	engine := NewEngine(sm, exec, 5)
-	
+	reg, _ := NewRegistry(storageDir)
+
 	hbDir := filepath.Join(storageDir, "heartbeats")
 	os.MkdirAll(hbDir, 0755)
-	
+
 	skillsDir := filepath.Join(storageDir, "skills")
 	os.MkdirAll(skillsDir, 0755)
-	
+
 	skill := SkillGraph{
-		Name: "hb-skill",
+		Name:         "hb-skill",
 		InitialState: "end",
 		States: map[string]StateDef{
 			"end": {Type: "end"},
@@ -42,14 +43,14 @@ echo '{"type": "message", "content": "hb done"}'
 	os.WriteFile(filepath.Join(skillDir, "skill.json"), skillData, 0644)
 
 	hb := Heartbeat{
-		Name:  "Test HB",
-		Skill: "hb-skill",
-		Path:  storageDir, // Use absolute path
+		Name:   "Test HB",
+		Skills: []string{"hb-skill"},
+		Path:   storageDir, // Use absolute path
 	}
 	hbData, _ := json.Marshal(hb)
 	os.WriteFile(filepath.Join(hbDir, "test.json"), hbData, 0644)
 
-	runner := NewHeartbeatRunner(storageDir, sm, engine, nil)
+	runner := NewHeartbeatRunner(storageDir, sm, engine, nil, reg)
 	runner.CheckAndRun()
 
 	// Wait for background execution (increased for stability)

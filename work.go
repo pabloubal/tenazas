@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -24,87 +23,111 @@ func HandleWorkCommand(storageDir string, args []string) {
 
 	switch cmd {
 	case "add":
-		if len(args) < 3 {
-			fmt.Println("Usage: tenazas work add \"Title\" \"Description\"")
-			os.Exit(1)
-		}
-		title, desc := args[1], args[2]
-		id := time.Now().UnixNano() % 10000
-		slug := strings.ReplaceAll(strings.ToLower(title), " ", "-")
-		filename := filepath.Join(tasksDir, fmt.Sprintf("task-%d-%s.md", id, slug))
-
-		content := fmt.Sprintf("---\nid: %d\ntitle: %s\nstatus: todo\ncreated_at: %s\n---\n\n# %s\n\n%s\n",
-			id, title, time.Now().Format(time.RFC3339), title, desc)
-
-		os.WriteFile(filename, []byte(content), 0644)
-		fmt.Printf("Created task: %s\n", filename)
-
+		handleWorkAdd(tasksDir, args[1:])
 	case "next":
-		files, err := filepath.Glob(filepath.Join(tasksDir, "*.md"))
-		if err != nil {
-			fmt.Printf("Error searching for tasks: %v\n", err)
-			os.Exit(1)
-		}
-		for _, f := range files {
-			data, err := os.ReadFile(f)
-			if err != nil {
-				continue
-			}
-			if strings.Contains(string(data), "status: todo") {
-				newContent := strings.Replace(string(data), "status: todo", "status: in-progress", 1)
-				if err := os.WriteFile(f, []byte(newContent), 0644); err != nil {
-					fmt.Printf("Error updating task: %v\n", err)
-					os.Exit(1)
-				}
-				fmt.Printf("STARTING:%s\n\n%s", f, string(data))
-				return
-			}
-		}
+		handleWorkNext(tasksDir)
+	case "complete":
+		handleWorkComplete(tasksDir)
+	case "status":
+		handleWorkStatus(tasksDir)
+	default:
+		fmt.Printf("Unknown command: %s\n", cmd)
+		os.Exit(1)
+	}
+}
+
+func handleWorkAdd(tasksDir string, args []string) {
+	if len(args) < 2 {
+		fmt.Println("Usage: tenazas work add \"Title\" \"Description\"")
+		os.Exit(1)
+	}
+
+	id, err := getNextTaskID(tasksDir)
+	if err != nil {
+		fmt.Printf("Error generating task ID: %v\n", err)
+		os.Exit(1)
+	}
+
+	task := &Task{
+		ID:        id,
+		Title:     args[0],
+		Status:    "todo",
+		CreatedAt: time.Now().Truncate(time.Second),
+		Content:   args[1],
+	}
+
+	taskPath := filepath.Join(tasksDir, id+".md")
+	if err := WriteTask(taskPath, task); err != nil {
+		fmt.Printf("Error writing task: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Created task: %s\n", taskPath)
+}
+
+func handleWorkNext(tasksDir string) {
+	tasks, err := listTasks(tasksDir)
+	if err != nil {
+		fmt.Printf("Error searching for tasks: %v\n", err)
+		os.Exit(1)
+	}
+
+	if active := findInProgress(tasks); active != nil {
+		fmt.Printf("ALREADY IN PROGRESS: %s\n", active.ID)
+		return
+	}
+
+	next := SelectNextTask(tasks)
+	if next == nil {
 		fmt.Println("EMPTY")
 		os.Exit(1)
+	}
 
-	case "complete":
-		files, err := filepath.Glob(filepath.Join(tasksDir, "*.md"))
-		if err != nil {
-			fmt.Printf("Error searching for tasks: %v\n", err)
+	next.Status = "in-progress"
+	updateAndPrintTask(next)
+}
+
+func handleWorkComplete(tasksDir string) {
+	tasks, _ := listTasks(tasksDir)
+	if active := findInProgress(tasks); active != nil {
+		active.Status = "done"
+		if err := WriteTask(active.FilePath, active); err != nil {
+			fmt.Printf("Error updating task: %v\n", err)
 			os.Exit(1)
 		}
-		for _, f := range files {
-			data, err := os.ReadFile(f)
-			if err != nil {
-				continue
-			}
-			if strings.Contains(string(data), "status: in-progress") {
-				newContent := strings.Replace(string(data), "status: in-progress", "status: done", 1)
-				if err := os.WriteFile(f, []byte(newContent), 0644); err != nil {
-					fmt.Printf("Error updating task: %v\n", err)
-					os.Exit(1)
-				}
-				fmt.Printf("COMPLETED:%s\n", filepath.Base(f))
-				return
-			}
-		}
-		fmt.Println("ERROR: No task in progress")
-		os.Exit(1)
-
-	case "status":
-		files, _ := filepath.Glob(filepath.Join(tasksDir, "*.md"))
-		todo, ip, done := 0, 0, 0
-		for _, f := range files {
-			data, _ := os.ReadFile(f)
-			s := string(data)
-			if strings.Contains(s, "status: todo") {
-				todo++
-			}
-			if strings.Contains(s, "status: in-progress") {
-				ip++
-			}
-			if strings.Contains(s, "status: done") {
-				done++
-			}
-		}
-		fmt.Printf("Todo: %d | In-Progress: %d | Done: %d\n", todo, ip, done)
+		fmt.Printf("COMPLETED:%s\n", filepath.Base(active.FilePath))
+		return
 	}
+	fmt.Println("ERROR: No task in progress")
+	os.Exit(1)
+}
+
+func handleWorkStatus(tasksDir string) {
+	tasks, _ := listTasks(tasksDir)
+	counts := make(map[string]int)
+	for _, t := range tasks {
+		counts[t.Status]++
+	}
+	fmt.Printf("Todo: %d | In-Progress: %d | Done: %d | Blocked: %d\n",
+		counts["todo"], counts["in-progress"], counts["done"], counts["blocked"])
+}
+
+func findInProgress(tasks []*Task) *Task {
+	for _, t := range tasks {
+		if t.Status == "in-progress" {
+			return t
+		}
+	}
+	return nil
+}
+
+func updateAndPrintTask(t *Task) {
+	if err := WriteTask(t.FilePath, t); err != nil {
+		fmt.Printf("Error updating task: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("STARTING:%s\n\n", t.FilePath)
+	data, _ := os.ReadFile(t.FilePath)
+	fmt.Println(string(data))
 }
 
 func getTasksDir(storageDir string) string {

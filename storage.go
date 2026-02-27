@@ -89,6 +89,16 @@ func (s *Storage) ResolveSkillPath(name string) string {
 			return path
 		}
 	}
+	// Support direct .json file in skills/
+	checkPaths := []string{
+		filepath.Join(s.BaseDir, "skills", name+".json"),
+		filepath.Join("skills", name+".json"),
+	}
+	for _, p := range checkPaths {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
 	return ""
 }
 

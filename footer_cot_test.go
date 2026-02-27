@@ -57,7 +57,7 @@ func TestFormatFooter_CoT(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// This call will fail to compile initially because formatFooter signature 
+			// This call will fail to compile initially because formatFooter signature
 			// currently expects sessionID instead of hint.
 			got := formatFooter(tc.mode, tc.yolo, tc.skillCount, tc.hint)
 			if got != tc.expected {
@@ -71,7 +71,7 @@ func TestCLILastThoughtState(t *testing.T) {
 	cli := &CLI{}
 	// This will fail to compile because lastThought field doesn't exist yet.
 	cli.lastThought = "Initial thought"
-	
+
 	if cli.lastThought != "Initial thought" {
 		t.Errorf("expected lastThought to be 'Initial thought', got %q", cli.lastThought)
 	}

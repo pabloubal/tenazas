@@ -54,7 +54,7 @@ func TestModeCommand(t *testing.T) {
 		ID:          uuid.New().String(),
 		LastUpdated: time.Now(),
 		// ApprovalMode will fail to compile if not added to Session struct
-		ApprovalMode: ApprovalModePlan, 
+		ApprovalMode: ApprovalModePlan,
 	}
 
 	// This will fail to compile if handleMode is not defined
@@ -80,16 +80,16 @@ func TestDrawFooterSequences(t *testing.T) {
 		Out: &out,
 	}
 	sess := &Session{
-		ID: "1234567890abcdef",
+		ID:           "1234567890abcdef",
 		ApprovalMode: ApprovalModePlan,
 	}
 
 	// This will fail to compile if lastThought is not added to CLI struct
 	cli.lastThought = "Testing footer"
 	cli.skillCount = 5
-	
+
 	cli.drawFooter(sess)
-	
+
 	got := out.String()
 	// Check for ANSI sequences
 	// \033[s (save cursor)
@@ -97,7 +97,7 @@ func TestDrawFooterSequences(t *testing.T) {
 	// \033[2K (clear line)
 	// \033[44;37m (colors)
 	// \033[u (restore cursor)
-	
+
 	if !strings.Contains(got, "\x1b[s") {
 		t.Errorf("output missing save cursor sequence")
 	}
@@ -117,10 +117,10 @@ func TestSetupTerminal(t *testing.T) {
 	cli := &CLI{
 		Out: &out,
 	}
-	
+
 	// This will fail to compile if setupTerminal is not defined
 	cli.setupTerminal()
-	
+
 	got := out.String()
 	// Check for scrolling region sequence: \033[1;<N-1>r
 	// Since N depends on the actual terminal, we check for the general pattern.

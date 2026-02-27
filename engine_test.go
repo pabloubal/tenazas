@@ -96,10 +96,10 @@ func TestEngineIntervention(t *testing.T) {
 	}
 
 	sess := &Session{
-		ID:     "sess-interv",
-		Status: "intervention_required",
+		ID:         "sess-interv",
+		Status:     "intervention_required",
 		ActiveNode: "wait",
-		RoleCache: make(map[string]string),
+		RoleCache:  make(map[string]string),
 	}
 	sm.Save(sess)
 
@@ -121,7 +121,7 @@ func TestEngineActionLoop(t *testing.T) {
 	defer os.RemoveAll(storageDir)
 
 	sm := NewSessionManager(storageDir)
-	
+
 	// Create a dummy binary that we can use for executor
 	dummyScript := `#!/bin/bash
 echo '{"type": "init", "session_id": "sid-999"}'
@@ -279,7 +279,7 @@ func TestEngineExecutePrompt(t *testing.T) {
 	defer os.RemoveAll(storageDir)
 
 	sm := NewSessionManager(storageDir)
-	
+
 	dummyScript := `#!/bin/bash
 echo '{"type": "init", "session_id": "sid-default"}'
 echo '{"type": "message", "content": "Direct response"}'
@@ -298,7 +298,7 @@ echo '{"type": "message", "content": "Direct response"}'
 	sm.Save(sess)
 
 	engine.ExecutePrompt(sess, "hello")
-	
+
 	// Wait a bit for Audit append (it's synchronous but disk I/O might be delayed in OS cache)
 	time.Sleep(50 * time.Millisecond)
 

@@ -51,8 +51,8 @@ func TestCLI_DoubleTabTrigger(t *testing.T) {
 	cli.In = strings.NewReader("	")
 	cli.IsImmersive = false
 	cli.lastTabTime = time.Time{}
-	
-	// We can't easily test slow double tab in a single replRaw call without a custom reader 
+
+	// We can't easily test slow double tab in a single replRaw call without a custom reader
 	// that introduces delays. Let's try that.
 }
 
@@ -141,7 +141,7 @@ func TestCLI_DoubleTabComprehensive(t *testing.T) {
 			delays: []time.Duration{0, 50 * time.Millisecond, 0},
 		}
 		cli.replRaw(sess)
-		
+
 		if string(cli.input) != "/run" {
 			t.Errorf("expected input to remain '/run' after double tab toggle, got '%s'", string(cli.input))
 		}
@@ -159,7 +159,7 @@ func TestCLI_DoubleTabComprehensive(t *testing.T) {
 			delays: []time.Duration{0, 50 * time.Millisecond, 50 * time.Millisecond, 0},
 		}
 		cli.replRaw(sess)
-		
+
 		if !cli.IsImmersive {
 			t.Error("expected IsImmersive to be true")
 		}

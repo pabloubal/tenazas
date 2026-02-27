@@ -11,6 +11,7 @@ import (
 
 func main() {
 	resume := flag.Bool("resume", false, "Resume a previous session")
+	daemon := flag.Bool("daemon", false, "Run as a background daemon (Telegram bot and Heartbeat runner)")
 	flag.Parse()
 
 	cfg, err := loadConfig()
@@ -33,9 +34,12 @@ func main() {
 	}
 
 	// Start Interfaces
-	tg := setupTelegram(cfg, sm, exec, reg, engine)
-	hb := NewHeartbeatRunner(cfg.StorageDir, sm, engine, tg)
-	go hb.CheckAndRun()
+	var tg *Telegram
+	if *daemon {
+		tg = setupTelegram(cfg, sm, exec, reg, engine)
+		hb := NewHeartbeatRunner(cfg.StorageDir, sm, engine, tg, reg)
+		go hb.CheckAndRun()
+	}
 
 	handleSignals()
 

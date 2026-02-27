@@ -2,13 +2,14 @@ package main
 
 import (
 	"bytes"
-	"crypto/md5"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -19,15 +20,20 @@ type Telegram struct {
 	Sm             *SessionManager
 	Exec           *Executor
 	Reg            *Registry
-	Engine         *Engine
+	Engine         EngineInterface
 	lastUpdateID   int64
-	activeMessages map[string]*tgLiveStream // sessionID -> stream state
+	activeMessages map[string]*tgLiveStream // chatID:sessionID -> stream state
+	mu             sync.RWMutex
 }
 
 type tgLiveStream struct {
 	msgID    int64
 	fullText string
 	lastEdit time.Time
+}
+
+func (tg *Telegram) streamKey(chatID int64, sessionID string) string {
+	return fmt.Sprintf("%d:%s", chatID, sessionID)
 }
 
 // Telegram API Structs
@@ -55,8 +61,10 @@ type TgResponse struct {
 }
 
 type TgMessageResponse struct {
-	OK     bool `json:"ok"`
-	Result struct {
+	OK          bool   `json:"ok"`
+	ErrorCode   int    `json:"error_code,omitempty"`
+	Description string `json:"description,omitempty"`
+	Result      struct {
 		MessageID int64 `json:"message_id"`
 	} `json:"result"`
 }
@@ -70,9 +78,14 @@ func (tg *Telegram) IsAllowed(id int64) bool {
 	return false
 }
 
+var telegramBaseURL = "https://api.telegram.org/bot"
+
 func (tg *Telegram) Call(method string, payload interface{}) ([]byte, error) {
-	url := fmt.Sprintf("https://api.telegram.org/bot%s/%s", tg.Token, method)
-	data, _ := json.Marshal(payload)
+	url := fmt.Sprintf("%s%s/%s", telegramBaseURL, tg.Token, method)
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal error: %v", err)
+	}
 	resp, err := http.Post(url, "application/json", bytes.NewBuffer(data))
 	if err != nil {
 		return nil, err
@@ -81,7 +94,60 @@ func (tg *Telegram) Call(method string, payload interface{}) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
+func (tg *Telegram) send(chatID int64, text string, options ...map[string]interface{}) {
+	payload := map[string]interface{}{
+		"chat_id":    chatID,
+		"text":       text,
+		"parse_mode": "HTML",
+	}
+	for _, opt := range options {
+		for k, v := range opt {
+			payload[k] = v
+		}
+	}
+	if _, err := tg.Call("sendMessage", payload); err != nil {
+		fmt.Printf("Telegram error in send: %v\n", err)
+	}
+}
+
+type tgJob struct {
+	chatID int64
+	text   string
+	data   string
+	cb     bool
+}
+
+// dispatch handles engine calls. In production (Poll loop), it uses goroutines.
+// In tests (UpdateInterval usually 0), it remains synchronous.
+func (tg *Telegram) dispatch(f func()) {
+	if tg.UpdateInterval > 0 {
+		go f()
+	} else {
+		f()
+	}
+}
+
 func (tg *Telegram) Poll() {
+	if tg.UpdateInterval < 1000 {
+		tg.UpdateInterval = 1000
+	}
+
+	jobs := make(chan tgJob, 100)
+	for i := 0; i < 5; i++ {
+		go func() {
+			for j := range jobs {
+				// Process jobs synchronously within the worker pool.
+				// Long-running engine calls are backgrounded inside the handlers
+				// via tg.dispatch to keep these workers free.
+				if j.cb {
+					tg.HandleCallback(j.chatID, j.data)
+				} else {
+					tg.HandleMessage(j.chatID, j.text)
+				}
+			}
+		}()
+	}
+
 	eventCh := GlobalBus.Subscribe()
 	go tg.listenEvents(eventCh)
 
@@ -99,17 +165,22 @@ func (tg *Telegram) Poll() {
 		if err := json.Unmarshal(data, &res); err != nil {
 			continue
 		}
-		
+
 		for _, upd := range res.Result {
 			tg.lastUpdateID = upd.UpdateID
-			if !tg.IsAllowed(upd.Message.From.ID) && !tg.IsAllowed(upd.CallbackQuery.From.ID) {
+			fromID := upd.Message.From.ID
+			if fromID == 0 {
+				fromID = upd.CallbackQuery.From.ID
+			}
+
+			if !tg.IsAllowed(fromID) {
 				continue
 			}
 
 			if upd.Message.Text != "" {
-				go tg.HandleMessage(upd.Message.From.ID, upd.Message.Text)
+				jobs <- tgJob{chatID: fromID, text: upd.Message.Text}
 			} else if upd.CallbackQuery.Data != "" {
-				go tg.HandleCallback(upd.CallbackQuery.From.ID, upd.CallbackQuery.Data)
+				jobs <- tgJob{chatID: fromID, data: upd.CallbackQuery.Data, cb: true}
 			}
 		}
 	}
@@ -118,34 +189,44 @@ func (tg *Telegram) Poll() {
 func (tg *Telegram) listenEvents(ch chan Event) {
 	formatter := &HtmlFormatter{}
 	for e := range ch {
-		if e.Type == EventAudit {
+		switch e.Type {
+		case EventAudit:
 			tg.broadcastAudit(e.SessionID, e.Payload.(AuditEntry), formatter)
+		case EventTaskStatus:
+			payload := e.Payload.(TaskStatusPayload)
+			tg.NotifyTaskState(e.SessionID, payload.State, payload.Details)
 		}
 	}
 }
 
 func (tg *Telegram) broadcastAudit(sessionID string, audit AuditEntry, f *HtmlFormatter) {
+	tg.mu.Lock()
 	if tg.activeMessages == nil {
 		tg.activeMessages = make(map[string]*tgLiveStream)
 	}
+	tg.mu.Unlock()
 
 	for _, id := range tg.AllowedIDs {
-		instanceID := fmt.Sprintf("tg-%d", id)
-		state, err := tg.Reg.Get(instanceID)
-		if err != nil || state.SessionID != sessionID {
-			continue
-		}
+		instanceID := tg.instanceID(id)
+		state, _ := tg.Reg.Get(instanceID)
 
 		// Handle Streaming vs Discrete events
 		switch audit.Type {
 		case AuditLLMChunk:
 			tg.handleStreamingChunk(id, sessionID, audit.Content, f)
+			continue
 		case AuditLLMResponse:
 			tg.handleStreamingEnd(id, sessionID, audit.Content, f)
-		default:
-			if tg.shouldDisplay(state.Verbosity, audit.Type) {
-				tg.sendAuditMessage(id, sessionID, audit, f)
-			}
+			continue
+		}
+
+		// Other events require the session to be focused
+		if state.SessionID != sessionID {
+			continue
+		}
+
+		if tg.shouldDisplay(state.Verbosity, audit.Type) {
+			tg.sendAuditMessage(id, sessionID, audit, f)
 		}
 	}
 }
@@ -175,34 +256,57 @@ func (tg *Telegram) sendAuditMessage(chatID int64, sessionID string, audit Audit
 	if audit.Type == AuditIntervention {
 		tg.sendIntervention(chatID, sessionID, prefix+content+suffix)
 	} else {
-		tg.Call("sendMessage", map[string]interface{}{
-			"chat_id":    chatID,
-			"text":       prefix + content + suffix,
-			"parse_mode": "HTML",
-		})
+		tg.send(chatID, prefix+content+suffix)
 	}
 }
 
 func (tg *Telegram) handleStreamingChunk(id int64, sessionID, content string, f *HtmlFormatter) {
-	stream, ok := tg.activeMessages[sessionID]
+	key := tg.streamKey(id, sessionID)
+	tg.mu.RLock()
+	stream, ok := tg.activeMessages[key]
+	tg.mu.RUnlock()
+
 	if !ok {
-		msgData, _ := tg.Call("sendMessage", map[string]interface{}{
-			"chat_id":    id,
-			"text":       "<i>...</i>",
-			"parse_mode": "HTML",
-		})
-		var msgRes TgMessageResponse
-		json.Unmarshal(msgData, &msgRes)
-		stream = &tgLiveStream{msgID: msgRes.Result.MessageID, lastEdit: time.Now()}
-		tg.activeMessages[sessionID] = stream
+		tg.mu.Lock()
+		stream, ok = tg.activeMessages[key]
+		if !ok {
+			msgData, err := tg.Call("sendMessage", map[string]interface{}{
+				"chat_id":    id,
+				"text":       "<i>...</i>",
+				"parse_mode": "HTML",
+			})
+			if err == nil {
+				var msgRes TgMessageResponse
+				if json.Unmarshal(msgData, &msgRes) == nil && msgRes.OK {
+					stream = &tgLiveStream{msgID: msgRes.Result.MessageID, lastEdit: time.Now()}
+					tg.activeMessages[key] = stream
+				}
+			}
+		}
+		tg.mu.Unlock()
+		if stream == nil {
+			return
+		}
 	}
-	
+
+	tg.mu.Lock()
+	defer tg.mu.Unlock()
+
 	stream.fullText += content
-	if time.Since(stream.lastEdit) > time.Duration(tg.UpdateInterval)*time.Millisecond {
-		tg.Call("editMessageText", map[string]interface{}{
+	interval := time.Duration(tg.UpdateInterval) * time.Millisecond
+	if interval < 1000*time.Millisecond {
+		interval = 1000 * time.Millisecond
+	}
+
+	if time.Since(stream.lastEdit) > interval {
+		text := f.escape(stream.fullText)
+		if len(text) > 4000 {
+			text = text[:3997] + "..."
+		}
+		_, _ = tg.Call("editMessageText", map[string]interface{}{
 			"chat_id":    id,
 			"message_id": stream.msgID,
-			"text":       f.escape(stream.fullText),
+			"text":       text,
 			"parse_mode": "HTML",
 		})
 		stream.lastEdit = time.Now()
@@ -210,57 +314,250 @@ func (tg *Telegram) handleStreamingChunk(id int64, sessionID, content string, f 
 }
 
 func (tg *Telegram) handleStreamingEnd(id int64, sessionID, content string, f *HtmlFormatter) {
-	if stream, ok := tg.activeMessages[sessionID]; ok {
-		tg.Call("editMessageText", map[string]interface{}{
-			"chat_id":    id,
-			"message_id": stream.msgID,
-			"text":       "🟢 <b>RESPONSE:</b>\x0a" + f.escape(content),
-			"parse_mode": "HTML",
-		})
-		delete(tg.activeMessages, sessionID)
-	} else {
-		tg.Call("sendMessage", map[string]interface{}{
-			"chat_id":    id,
-			"text":       "🟢 <b>RESPONSE:</b>\x0a" + f.escape(content),
-			"parse_mode": "HTML",
-		})
+	markup := getActionKeyboard(sessionID, content)
+	text := "🟢 <b>RESPONSE:</b>\x0a" + f.escape(content)
+
+	key := tg.streamKey(id, sessionID)
+	tg.mu.Lock()
+	stream, ok := tg.activeMessages[key]
+	var msgID int64
+	if ok {
+		msgID = stream.msgID
+		delete(tg.activeMessages, key)
+	}
+	tg.mu.Unlock()
+
+	_, _ = tg.upsertMonitoringMessage(id, msgID, text, markup)
+}
+
+func (tg *Telegram) sendIntervention(id int64, sessionID string, text string) {
+	tg.send(id, text, map[string]interface{}{
+		"reply_markup": map[string]interface{}{
+			"inline_keyboard": [][]map[string]interface{}{
+				{tgBtn("🔄 Retry", "intv:retry:"+sessionID), tgBtn("⏩ Proceed", "intv:proceed_to_fail:"+sessionID)},
+				{tgBtn("🛑 Abort", "intv:abort:"+sessionID)},
+			},
+		},
+	})
+}
+
+func (tg *Telegram) NotifyTaskState(sessionID string, state string, details map[string]string) {
+	sess, err := tg.Sm.Load(sessionID)
+	if err != nil {
+		return
+	}
+
+	chatID := sess.MonitoringChatID
+	if chatID == 0 && len(tg.AllowedIDs) > 0 {
+		chatID = tg.AllowedIDs[0]
+	}
+
+	if chatID == 0 {
+		return
+	}
+
+	text := tg.formatTaskStatusText(sess, state, details)
+	keyboard := tg.getTaskStatusKeyboard(sessionID, state)
+
+	msgID, err := tg.upsertMonitoringMessage(chatID, sess.MonitoringMessageID, text, keyboard)
+	if err == nil && msgID != sess.MonitoringMessageID {
+		sess.MonitoringMessageID = msgID
+		sess.MonitoringChatID = chatID
+		if err := tg.Sm.Save(sess); err != nil {
+			fmt.Printf("Error saving session after task status update: %v\x0a", err)
+		}
 	}
 }
 
-func (tg *Telegram) sendIntervention(id int64, sessionID, text string) {
-	tg.Call("sendMessage", map[string]interface{}{
-		"chat_id":    id,
-		"text":       text,
-		"parse_mode": "HTML",
-		"reply_markup": map[string]interface{}{
-			"inline_keyboard": [][]map[string]interface{}{
-				{
-					{"text": "🔄 Retry", "callback_data": "intv:retry:" + sessionID},
-					{"text": "⏩ Proceed", "callback_data": "intv:proceed_to_fail:" + sessionID},
-				},
-				{
-					{"text": "🛑 Abort", "callback_data": "intv:abort:" + sessionID},
-				},
-			},
-		},
-	})
+func (tg *Telegram) upsertMonitoringMessage(chatID, msgID int64, text string, keyboard map[string]interface{}) (int64, error) {
+	if len(text) > 4000 {
+		text = text[:3997] + "..."
+	}
+
+	payload := map[string]interface{}{
+		"chat_id":      chatID,
+		"text":         text,
+		"parse_mode":   "HTML",
+		"reply_markup": keyboard,
+	}
+
+	if msgID != 0 {
+		payload["message_id"] = msgID
+		resp, err := tg.Call("editMessageText", payload)
+		if err == nil {
+			var tgRes TgMessageResponse
+			if err := json.Unmarshal(resp, &tgRes); err == nil {
+				if tgRes.OK || strings.Contains(tgRes.Description, "message is not modified") {
+					return msgID, nil
+				}
+			}
+		}
+		delete(payload, "message_id")
+	}
+
+	resp, err := tg.Call("sendMessage", payload)
+	if err != nil {
+		return 0, fmt.Errorf("failed to send message: %v", err)
+	}
+
+	var tgRes TgMessageResponse
+	if err := json.Unmarshal(resp, &tgRes); err == nil && tgRes.OK {
+		return tgRes.Result.MessageID, nil
+	}
+
+	return 0, fmt.Errorf("failed to parse telegram response")
 }
 
-func (tg *Telegram) NotifyWithButton(chatID int64, text, btnText, callbackData string) {
-	tg.Call("sendMessage", map[string]interface{}{
-		"chat_id":    chatID,
-		"text":       text,
-		"parse_mode": "HTML",
-		"reply_markup": map[string]interface{}{
-			"inline_keyboard": [][]map[string]interface{}{
-				{{"text": btnText, "callback_data": callbackData}},
-			},
+var stateMeta = map[string]struct {
+	icon, label, btn, act string
+}{
+	TaskStateStarted:   {"🚀", "STARTED", "⏸️ Pause", "task_pause"},
+	TaskStateBlocked:   {"⏸️", "BLOCKED", "💬 Respond & Unblock", "task_respond"},
+	TaskStateCompleted: {"✅", "COMPLETED", "🔍 Review Output", "task_review"},
+	TaskStateFailed:    {"❌", "FAILED", "🔍 Review Output", "task_review"},
+}
+
+func (tg *Telegram) formatTaskStatusText(sess *Session, state string, details map[string]string) string {
+	meta := stateMeta[state]
+	icon, label := meta.icon, meta.label
+	if icon == "" {
+		icon, label = "⏳", state
+	}
+
+	title := sess.Title
+	if title == "" {
+		title = sess.SkillName
+	}
+	if title == "" {
+		title = sess.ID
+	}
+
+	var buf strings.Builder
+	_, _ = fmt.Fprintf(&buf, "%s <b>TASK %s</b>\x0a\x0a", icon, label)
+	_, _ = fmt.Fprintf(&buf, "<b>Task:</b> %s\x0a", title)
+	_, _ = fmt.Fprintf(&buf, "<b>Path:</b> <code>%s</code>\x0a", filepath.Base(sess.CWD))
+
+	if reason, ok := details["reason"]; ok && reason != "" {
+		_, _ = fmt.Fprintf(&buf, "\x0a<b>Details:</b> %s\x0a", reason)
+	}
+
+	return buf.String()
+}
+
+func (tg *Telegram) getTaskStatusKeyboard(sessionID string, state string) map[string]interface{} {
+	meta, ok := stateMeta[state]
+	if !ok || meta.btn == "" {
+		return nil
+	}
+	return map[string]interface{}{
+		"inline_keyboard": [][]map[string]interface{}{
+			{tgBtn(meta.btn, "act:"+meta.act+":"+sessionID)},
 		},
+	}
+}
+
+func extractShellCommand(content string) string {
+	langs := []string{"bash", "sh", "shell", ""}
+	type block struct {
+		start int
+		cmd   string
+	}
+	var blocks []block
+
+	for _, lang := range langs {
+		prefix := "```" + lang
+		pos := 0
+		for {
+			if pos >= len(content) {
+				break
+			}
+			idx := strings.Index(content[pos:], prefix)
+			if idx == -1 {
+				break
+			}
+			startIdx := pos + idx
+			prefixEnd := startIdx + len(prefix)
+			if prefixEnd >= len(content) {
+				break
+			}
+
+			rest := content[prefixEnd:]
+			lineEnd := strings.Index(rest, "\n")
+			codeStart := prefixEnd
+			if lineEnd != -1 {
+				codeStart += lineEnd + 1
+			} else if lang != "" {
+				pos = startIdx + 1
+				continue
+			}
+
+			if codeStart >= len(content) {
+				break
+			}
+			endIdx := strings.Index(content[codeStart:], "```")
+			if endIdx != -1 {
+				cmd := strings.TrimSpace(content[codeStart : codeStart+endIdx])
+				if cmd != "" {
+					blocks = append(blocks, block{startIdx, cmd})
+				}
+				pos = codeStart + endIdx + 3
+			} else {
+				pos = startIdx + 1
+			}
+		}
+	}
+
+	if len(blocks) == 0 {
+		return ""
+	}
+	sort.Slice(blocks, func(i, j int) bool {
+		if blocks[i].start != blocks[j].start {
+			return blocks[i].start < blocks[j].start
+		}
+		return len(blocks[i].cmd) > len(blocks[j].cmd)
 	})
+	return blocks[0].cmd
+}
+
+func getActionKeyboard(sessionID, content string) map[string]interface{} {
+	keyboard := [][]map[string]interface{}{
+		{tgBtn("➡️ Continue", "act:continue_prompt:"+sessionID), tgBtn("🆕 New Session", "act:new_session:"+sessionID)},
+	}
+
+	if cmd := extractShellCommand(content); cmd != "" {
+		shortCmd := cmd
+		if len(shortCmd) > 20 {
+			shortCmd = shortCmd[:17] + "..."
+		}
+		keyboard = append(keyboard, []map[string]interface{}{tgBtn("▶️ Run: "+shortCmd, "act:run_command:"+sessionID)})
+	}
+
+	keyboard = append(keyboard, []map[string]interface{}{tgBtn("➕ More Actions...", "act:more_actions:"+sessionID)})
+	return map[string]interface{}{"inline_keyboard": keyboard}
+}
+
+func tgBtn(text, data string) map[string]interface{} {
+	return map[string]interface{}{"text": text, "callback_data": data}
+}
+
+func (tg *Telegram) getOrFocusSession(instanceID string) (*Session, error) {
+	state, err := tg.Reg.Get(instanceID)
+	if err == nil && state.SessionID != "" {
+		if sess, err := tg.Sm.Load(state.SessionID); err == nil {
+			return sess, nil
+		}
+	}
+
+	sess, err := tg.Sm.GetLatest()
+	if err != nil {
+		return nil, err
+	}
+	tg.Reg.Set(instanceID, sess.ID)
+	return sess, nil
 }
 
 func (tg *Telegram) HandleMessage(chatID int64, text string) {
-	instanceID := fmt.Sprintf("tg-%d", chatID)
+	instanceID := tg.instanceID(chatID)
 
 	if strings.HasPrefix(text, "/") {
 		tg.handleCommand(chatID, instanceID, text)
@@ -268,18 +565,27 @@ func (tg *Telegram) HandleMessage(chatID int64, text string) {
 	}
 
 	state, err := tg.Reg.Get(instanceID)
-	if err != nil {
-		tg.Call("sendMessage", map[string]interface{}{"chat_id": chatID, "text": "No active session."})
+	if err == nil && state.PendingAction == "rename" {
+		if err := tg.Sm.Rename(state.PendingData, text); err != nil {
+			tg.send(chatID, "❌ Error renaming session: "+err.Error())
+		} else {
+			tg.send(chatID, "✅ Session renamed to: <b>"+text+"</b>")
+		}
+		_ = tg.Reg.ClearPending(instanceID)
 		return
 	}
 
-	sess, err := tg.Sm.Load(state.SessionID)
+	sess, err := tg.getOrFocusSession(instanceID)
 	if err != nil {
-		tg.Call("sendMessage", map[string]interface{}{"chat_id": chatID, "text": "Session load failed."})
+		tg.send(chatID, "No active session. Use /sessions or /start.")
 		return
 	}
 
-	go tg.Engine.ExecutePrompt(sess, text)
+	if tg.Engine != nil {
+		tg.dispatch(func() { tg.Engine.ExecutePrompt(sess, text) })
+	} else {
+		tg.send(chatID, "❌ Engine not initialized. Please contact the administrator.")
+	}
 }
 
 func (tg *Telegram) handleCommand(chatID int64, instanceID, text string) {
@@ -292,13 +598,15 @@ func (tg *Telegram) handleCommand(chatID int64, instanceID, text string) {
 			v := strings.ToUpper(parts[1])
 			if v == "LOW" || v == "MEDIUM" || v == "HIGH" {
 				tg.Reg.SetVerbosity(instanceID, v)
-				tg.Call("sendMessage", map[string]interface{}{"chat_id": chatID, "text": "Verbosity set to " + v})
+				tg.send(chatID, "Verbosity set to "+v)
 			}
 		}
 	case "/yolo":
 		tg.toggleYolo(chatID, instanceID)
-	case "/resume":
-		tg.showResumeMenu(chatID)
+	case "/sessions":
+		tg.showSessionsMenu(chatID, 0)
+	case "/start":
+		tg.handleStartCommand(chatID)
 	case "/run":
 		if len(parts) > 1 {
 			tg.startSkill(chatID, instanceID, parts[1])
@@ -306,156 +614,321 @@ func (tg *Telegram) handleCommand(chatID int64, instanceID, text string) {
 	case "/last":
 		n := 5
 		if len(parts) > 1 {
-			fmt.Sscanf(parts[1], "%d", &n)
+			_, _ = fmt.Sscanf(parts[1], "%d", &n)
 		}
 		tg.showLastLogs(chatID, instanceID, n)
 	case "/help":
 		tg.showHelp(chatID)
 	default:
-		tg.Call("sendMessage", map[string]interface{}{"chat_id": chatID, "text": "Unknown command: " + cmd})
+		tg.send(chatID, "Unknown command: "+cmd)
 	}
 }
 
 func (tg *Telegram) showHelp(chatID int64) {
 	helpText := `<b>Tenazas Help</b>
 /help - Show this help message
-/resume - Resume a previous session
+/sessions - List and resume previous sessions
 /yolo - Toggle YOLO mode (autonomous mode)
 /verbosity [LOW|MEDIUM|HIGH] - Set event verbosity
 /run [skill] - Run a skill from your skills folder
 /last [n] - Show the last N audit log entries for the session
 `
-	tg.Call("sendMessage", map[string]interface{}{
-		"chat_id":    chatID,
-		"text":       helpText,
-		"parse_mode": "HTML",
+	tg.send(chatID, helpText)
+}
+
+func (tg *Telegram) handleStartCommand(chatID int64) {
+	tg.send(chatID, "👋 <b>Welcome to Tenazas!</b>\n\nI am your terminal-to-Telegram gateway. What would you like to do?", map[string]interface{}{
+		"reply_markup": map[string]interface{}{
+			"inline_keyboard": [][]map[string]interface{}{
+				{tgBtn("📂 My Sessions", "show_sessions:0")},
+				{tgBtn("🛠 Run Skill", "show_skills")},
+				{tgBtn("❓ Help", "help")},
+			},
+		},
 	})
 }
 
+func (tg *Telegram) showSkillsMenu(chatID int64) {
+	skills, err := tg.Sm.GetActiveSkills()
+	if err != nil || len(skills) == 0 {
+		tg.send(chatID, "No active skills found.")
+		return
+	}
+
+	var buttons [][]map[string]interface{}
+	for _, s := range skills {
+		buttons = append(buttons, []map[string]interface{}{tgBtn("🚀 "+s, "skill:run:"+s)})
+	}
+
+	tg.send(chatID, "<i>Select a skill to run:</i>", map[string]interface{}{
+		"reply_markup": map[string]interface{}{"inline_keyboard": buttons},
+	})
+}
 
 func (tg *Telegram) toggleYolo(chatID int64, instanceID string) {
-	state, err := tg.Reg.Get(instanceID)
-	if err != nil { return }
-	sess, _ := tg.Sm.Load(state.SessionID)
+	sess, err := tg.getOrFocusSession(instanceID)
+	if err != nil {
+		tg.send(chatID, "No active session.")
+		return
+	}
 	sess.Yolo = !sess.Yolo
-	tg.Sm.Save(sess)
+	if err := tg.Sm.Save(sess); err != nil {
+		tg.send(chatID, "❌ Error saving mode: "+err.Error())
+		return
+	}
 	status := "OFF"
-	if sess.Yolo { status = "ON" }
-	tg.Call("sendMessage", map[string]interface{}{
-		"chat_id": chatID, 
-		"text": "⚠️ YOLO Mode is now <b>" + status + "</b>", 
-		"parse_mode": "HTML",
-	})
+	if sess.Yolo {
+		status = "ON"
+	}
+	tg.send(chatID, "⚠️ YOLO Mode is now <b>"+status+"</b>")
 }
 
 func (tg *Telegram) startSkill(chatID int64, instanceID, skillName string) {
 	skill, err := LoadSkill(tg.Sm.StoragePath, skillName)
 	if err != nil {
-		tg.Call("sendMessage", map[string]interface{}{"chat_id": chatID, "text": "Skill not found: " + err.Error()})
+		tg.send(chatID, "Skill not found: "+err.Error())
 		return
 	}
-	
-	state, _ := tg.Reg.Get(instanceID)
-	sess, _ := tg.Sm.Load(state.SessionID)
+
+	sess, err := tg.getOrFocusSession(instanceID)
+	if err != nil {
+		tg.send(chatID, "No session found.")
+		return
+	}
+
 	sess.Title = "Task: " + skill.Name
 	sess.SkillName = skillName
-	tg.Sm.Save(sess)
-	
-	tg.Call("sendMessage", map[string]interface{}{"chat_id": chatID, "text": "Running skill: <b>" + skill.Name + "</b>", "parse_mode": "HTML"})
-	go tg.Engine.Run(skill, sess)
+	if err := tg.Sm.Save(sess); err != nil {
+		tg.send(chatID, "❌ Error saving session: "+err.Error())
+		return
+	}
+
+	tg.send(chatID, "Running skill: <b>"+skill.Name+"</b>")
+	tg.dispatch(func() { tg.Engine.Run(skill, sess) })
 }
 
 func (tg *Telegram) showLastLogs(chatID int64, instanceID string, n int) {
-	state, _ := tg.Reg.Get(instanceID)
-	sess, _ := tg.Sm.Load(state.SessionID)
+	sess, err := tg.getOrFocusSession(instanceID)
+	if err != nil {
+		tg.send(chatID, "No active session.")
+		return
+	}
 	logs, _ := tg.Sm.GetLastAudit(sess, n)
-	
-	f := &HtmlFormatter{}
+
 	var buf strings.Builder
 	buf.WriteString("<b>Last entries:</b>\x0a")
 	for _, l := range logs {
-		buf.WriteString(fmt.Sprintf("[%s] %s: %s\x0a", l.Timestamp.Format("15:04"), l.Type, l.Content))
+		_, _ = fmt.Fprintf(&buf, "[%s] %s: %s\x0a", l.Timestamp.Format("15:04"), l.Type, l.Content)
 	}
-	tg.Call("sendMessage", map[string]interface{}{"chat_id": chatID, "text": f.escape(buf.String()), "parse_mode": "HTML"})
+	tg.send(chatID, formatHTML(buf.String()))
 }
 
-func (tg *Telegram) showResumeMenu(chatID int64) {
-	sessions, _, _ := tg.Sm.List(0, 50)
-	cwds := make(map[string]bool)
-	var buttons [][]map[string]interface{}
-	
-	for _, s := range sessions {
-		if !cwds[s.CWD] {
-			cwds[s.CWD] = true
-			hash := fmt.Sprintf("%x", md5.Sum([]byte(s.CWD)))[:8]
-			buttons = append(buttons, []map[string]interface{}{
-				{"text": "📂 " + filepath.Base(s.CWD), "callback_data": "dir:" + hash},
-			})
-		}
+func (tg *Telegram) showSessionsMenu(chatID int64, page int) {
+	pageSize := 8
+	sessions, total, err := tg.Sm.ListActive(page, pageSize)
+	if err != nil {
+		tg.send(chatID, "Error: "+err.Error())
+		return
 	}
 
-	tg.Call("sendMessage", map[string]interface{}{
-		"chat_id":      chatID,
-		"text":         "<i>Select Workspace:</i>",
-		"parse_mode":   "HTML",
+	var buttons [][]map[string]interface{}
+	for _, s := range sessions {
+		title := s.Title
+		if title == "" {
+			title = s.ID[:8]
+		}
+		label := fmt.Sprintf("%s (%s)", title, filepath.Base(s.CWD))
+		buttons = append(buttons, []map[string]interface{}{tgBtn(label, "view_session:"+s.ID)})
+	}
+
+	var nav []map[string]interface{}
+	if page > 0 {
+		nav = append(nav, tgBtn("⬅️ Previous", fmt.Sprintf("show_sessions:%d", page-1)))
+	}
+	if (page+1)*pageSize < total {
+		nav = append(nav, tgBtn("Next ➡️", fmt.Sprintf("show_sessions:%d", page+1)))
+	}
+	if len(nav) > 0 {
+		buttons = append(buttons, nav)
+	}
+
+	tg.send(chatID, fmt.Sprintf("📂 <b>My Sessions</b> (Page %d/%d)", page+1, (total+pageSize-1)/pageSize), map[string]interface{}{
 		"reply_markup": map[string]interface{}{"inline_keyboard": buttons},
 	})
+}
+
+func (tg *Telegram) instanceID(chatID int64) string {
+	return fmt.Sprintf("tg-%d", chatID)
 }
 
 func (tg *Telegram) HandleCallback(chatID int64, data string) {
-	instanceID := fmt.Sprintf("tg-%d", chatID)
-	
-	switch {
-	case strings.HasPrefix(data, "dir:"):
-		tg.showSessionsInDir(chatID, data[4:])
-	case strings.HasPrefix(data, "res:"):
-		tg.focusSession(chatID, instanceID, data[4:])
-	case strings.HasPrefix(data, "intv:"):
-		tg.resolveIntervention(chatID, data)
+	instanceID := tg.instanceID(chatID)
+	parts := strings.Split(data, ":")
+	if len(parts) == 0 || parts[0] == "" {
+		return
+	}
+	cmd := parts[0]
+
+	handlers := map[string]func(int64, string, []string){
+		"show_sessions":     tg.handleShowSessions,
+		"dir":               tg.handleShowSessions,
+		"view_session":      tg.handleFocusSession,
+		"res":               tg.handleFocusSession,
+		"archive_session":   tg.handleArchiveSessionCB,
+		"show_skills":       tg.handleShowSkills,
+		"help":              tg.handleHelpCB,
+		"skill":             tg.handleSkillCB,
+		"intv":              tg.handleInterventionCB,
+		"act":               tg.handleActionCB,
+		"start_new_session": tg.handleStartNewSession,
+	}
+
+	if h, ok := handlers[cmd]; ok {
+		h(chatID, instanceID, parts)
 	}
 }
 
-func (tg *Telegram) showSessionsInDir(chatID int64, hash string) {
-	sessions, _, _ := tg.Sm.List(0, 50)
-	var buttons [][]map[string]interface{}
-	
-	for _, s := range sessions {
-		h := fmt.Sprintf("%x", md5.Sum([]byte(s.CWD)))[:8]
-		if h == hash {
-			title := s.Title
-			if title == "" { title = s.ID[:8] }
-			buttons = append(buttons, []map[string]interface{}{
-				{"text": "📑 " + title, "callback_data": "res:" + s.ID},
-			})
+func (tg *Telegram) handleShowSessions(chatID int64, _ string, parts []string) {
+	page := 0
+	if len(parts) > 1 {
+		_, _ = fmt.Sscanf(parts[1], "%d", &page)
+	}
+	tg.showSessionsMenu(chatID, page)
+}
+
+func (tg *Telegram) handleFocusSession(chatID int64, instanceID string, parts []string) {
+	if len(parts) > 1 {
+		tg.focusSession(chatID, instanceID, parts[1])
+	}
+}
+
+func (tg *Telegram) handleArchiveSessionCB(chatID int64, _ string, parts []string) {
+	if len(parts) > 1 {
+		tg.archiveSession(chatID, parts[1])
+	}
+}
+
+func (tg *Telegram) handleShowSkills(chatID int64, _ string, _ []string) {
+	tg.showSkillsMenu(chatID)
+}
+
+func (tg *Telegram) handleHelpCB(chatID int64, _ string, _ []string) {
+	tg.showHelp(chatID)
+}
+
+func (tg *Telegram) handleSkillCB(chatID int64, instanceID string, parts []string) {
+	if len(parts) > 2 && parts[1] == "run" {
+		tg.startSkill(chatID, instanceID, parts[2])
+	}
+}
+
+func (tg *Telegram) handleInterventionCB(chatID int64, _ string, parts []string) {
+	if len(parts) == 3 {
+		tg.Engine.ResolveIntervention(parts[2], parts[1])
+		tg.send(chatID, "Action dispatched.")
+	}
+}
+
+func (tg *Telegram) handleActionCB(chatID int64, instanceID string, parts []string) {
+	tg.handleActionCallback(chatID, instanceID, parts)
+}
+
+func (tg *Telegram) handleStartNewSession(chatID int64, _ string, _ []string) {
+	tg.showSessionsMenu(chatID, 0)
+}
+
+func (tg *Telegram) archiveSession(chatID int64, sessionID string) {
+	if err := tg.Sm.Archive(sessionID); err != nil {
+		tg.send(chatID, "❌ Error archiving: "+err.Error())
+		return
+	}
+	tg.send(chatID, "📦 Session archived.")
+}
+
+func (tg *Telegram) handleActionCallback(chatID int64, instanceID string, parts []string) {
+	if len(parts) < 3 {
+		return
+	}
+	action, sessionID := parts[1], parts[2]
+
+	sess, err := tg.Sm.Load(sessionID)
+	if err != nil {
+		tg.send(chatID, "Error: "+err.Error())
+		return
+	}
+
+	actionHandlers := map[string]func(*Session){
+		"task_pause": func(s *Session) {
+			s.Status = StatusIdle
+			if err := tg.Sm.Save(s); err != nil {
+				tg.send(chatID, "❌ Error pausing task: "+err.Error())
+			} else {
+				tg.send(chatID, "⏸️ Task paused.")
+			}
+		},
+		"task_respond": func(s *Session) {
+			tg.Reg.Set(instanceID, s.ID)
+			tg.send(chatID, "🗨️ <b>Session focused.</b> Provide input to unblock:")
+		},
+		"task_review": func(s *Session) { tg.Reg.Set(instanceID, s.ID); tg.showLastLogs(chatID, instanceID, 5) },
+		"continue_prompt": func(s *Session) {
+			if tg.Engine != nil {
+				tg.dispatch(func() { tg.Engine.ExecutePrompt(s, "Continue") })
+			}
+		},
+		"run_command": func(s *Session) { tg.handleRunCommandAction(chatID, s) },
+		"new_session": func(s *Session) {
+			newSess, _ := tg.Sm.Create(s.CWD, "New Session")
+			tg.Reg.Set(instanceID, newSess.ID)
+			tg.send(chatID, "🆕 Started new session in <code>"+filepath.Base(s.CWD)+"</code>")
+		},
+		"resume": func(s *Session) { tg.focusSession(chatID, instanceID, s.ID) },
+		"rename": func(s *Session) {
+			tg.Reg.SetPending(instanceID, "rename", s.ID)
+			tg.send(chatID, "✏️ Enter a new title:")
+		},
+		"archive":      func(s *Session) { tg.archiveSession(chatID, s.ID) },
+		"more_actions": func(s *Session) { tg.showMoreActions(chatID, s.ID) },
+		"toggle_yolo":  func(s *Session) { tg.toggleYolo(chatID, instanceID) },
+		"show_last":    func(s *Session) { tg.showLastLogs(chatID, instanceID, 5) },
+		"help":         func(_ *Session) { tg.showHelp(chatID) },
+	}
+
+	if h, ok := actionHandlers[action]; ok {
+		h(sess)
+	}
+}
+
+func (tg *Telegram) showMoreActions(chatID int64, sessionID string) {
+	tg.send(chatID, "<b>Session Tools:</b>", map[string]interface{}{
+		"reply_markup": map[string]interface{}{
+			"inline_keyboard": [][]map[string]interface{}{
+				{tgBtn("📝 Rename", "act:rename:"+sessionID), tgBtn("📦 Archive", "act:archive:"+sessionID)},
+				{tgBtn("⚠️ Toggle YOLO", "act:toggle_yolo:"+sessionID)},
+				{tgBtn("📜 Show Last Logs", "act:show_last:"+sessionID)},
+			},
+		},
+	})
+}
+
+func (tg *Telegram) handleRunCommandAction(chatID int64, sess *Session) {
+	logs, _ := tg.Sm.GetLastAudit(sess, 20)
+	for i := len(logs) - 1; i >= 0; i-- {
+		if logs[i].Type == AuditLLMResponse {
+			if cmd := extractShellCommand(logs[i].Content); cmd != "" {
+				tg.dispatch(func() { tg.Engine.ExecuteCommand(sess, cmd) })
+				return
+			}
 		}
 	}
-	tg.Call("sendMessage", map[string]interface{}{
-		"chat_id":      chatID,
-		"text":         "<i>Select Session:</i>",
-		"parse_mode":   "HTML",
-		"reply_markup": map[string]interface{}{"inline_keyboard": buttons},
-	})
+	tg.send(chatID, "No command found.")
 }
 
 func (tg *Telegram) focusSession(chatID int64, instanceID, sessID string) {
 	tg.Reg.Set(instanceID, sessID)
-	tg.Call("sendMessage", map[string]interface{}{
-		"chat_id":    chatID,
-		"text":       "✅ Focused on session <code>" + sessID + "</code>",
-		"parse_mode": "HTML",
-	})
+	tg.send(chatID, "✅ Focused on session <code>"+sessID+"</code>")
 }
 
-func (tg *Telegram) resolveIntervention(chatID int64, data string) {
-	parts := strings.Split(data, ":")
-	if len(parts) == 3 {
-		tg.Engine.ResolveIntervention(parts[2], parts[1])
-		tg.Call("sendMessage", map[string]interface{}{"chat_id": chatID, "text": "Action '" + parts[1] + "' dispatched."})
-	}
-}
-
-// formatHTML is a legacy helper maintained for test compatibility.
 func formatHTML(s string) string {
-	f := &HtmlFormatter{}
-	return f.escape(s)
+	return (&HtmlFormatter{}).escape(s)
 }
