@@ -1,0 +1,21 @@
+{
+  "skill_name": "taskmaster",
+  "initial_state": "validate_prd",
+  "states": {
+    "validate_prd": {
+      "type": "tool",
+      "command": "test -f docs/prd.md",
+      "next": "analyze_prd",
+      "on_fail_prompt": "This project is missing the required PRD document (docs/prd.md). Please create it so I can break down the tasks."
+    },
+    "analyze_prd": {
+      "type": "action_loop",
+      "session_role": "taskmaster",
+      "approval_mode": "yolo",
+      "instruction": "@prompt.md",
+      "verify_cmd": "tenazas work status",
+      "next": "done"
+    },
+    "done": { "type": "end" }
+  }
+}

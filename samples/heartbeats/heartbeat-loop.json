@@ -1,0 +1,6 @@
+{
+  "name": "Tenazas Loop Heartbeat",
+  "interval": "5m",
+  "path": "tenazas",
+  "skill": "loop"
+}

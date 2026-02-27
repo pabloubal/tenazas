@@ -1,0 +1,115 @@
+{
+  "skill_name": "loop",
+  "initial_state": "validate_tools",
+  "max_loops": 10,
+  "states": {
+    "validate_tools": {
+      "type": "tool",
+      "command": "grep -q 'test:' Makefile && grep -q 'build:' Makefile",
+      "next": "prepare_loop",
+      "on_fail_prompt": "This project is missing a Makefile with 'test:' and 'build:' targets. Cannot automate work without a test command."
+    },
+    "prepare_loop": {
+      "type": "tool",
+      "command": "rm implementation-plan.md .review .docs_updated 2>/dev/null || true",
+      "next": "find_next"
+    },
+    "find_next": {
+      "type": "tool",
+      "command": "tenazas work next",
+      "next": "step_1_plan",
+      "on_fail_prompt": "No more tasks found in the 'todo' state. Workflow complete.",
+      "on_fail_route": "done"
+    },
+    "step_1_plan": {
+      "type": "action_loop",
+      "session_role": "planner",
+      "instruction": "@plan.md",
+      "approval_mode": "yolo",
+      "verify_cmd": "test -f implementation-plan.md",
+      "max_retries": 2,
+      "on_fail_prompt": "Verification failed: You did not create the 'implementation-plan.md' file. Please write the plan to disk.",
+      "on_fail_route": "escalate_to_human",
+      "next": "step_2_red_phase"
+    },
+    "step_2_red_phase": {
+      "type": "action_loop",
+      "session_role": "tester",
+      "instruction": "Read 'implementation-plan.md'. We are following strict TDD. Write comprehensive unit tests for the feature. DO NOT write the actual implementation code. The tests MUST fail when run.",
+      "approval_mode": "yolo",
+      "verify_cmd": "make test && exit 1 || exit 0",
+      "max_retries": 3,
+      "on_fail_prompt": "TDD VIOLATION: The test suite passed, but no implementation should exist yet. You likely wrote 'dummy' logic or the test isn't asserting anything meaningful. Task: Understand what's going on and if needed rewrite the test to assert a specific behavior of the new feature that currently results in an error. Error output:\n\n```text\n{{stderr}}\n```",
+      "on_fail_route": "step_2_red_phase",
+      "next": "step_3_green_phase"
+    },
+    "step_3_green_phase": {
+      "type": "action_loop",
+      "session_role": "coder",
+      "instruction": "Read 'implementation-plan.md' and the failing tests. Write the minimal implementation code to make the tests pass. DO NOT modify the tests.",
+      "approval_mode": "yolo",
+      "verify_cmd": "make test",
+      "max_retries": 5,
+      "on_fail_prompt": "Verification failed with exit code {{exit_code}}.\n\n```text\n{{stderr}}\n```. Fix the implementation code.",
+      "on_fail_route": "step_3_green_phase",
+      "next": "step_4_refactor"
+    },
+    "step_4_refactor": {
+      "type": "action_loop",
+      "session_role": "coder",
+      "instruction": "The tests are passing. Refactor the implementation code for readability, performance, and DRY principles without breaking the tests.",
+      "approval_mode": "yolo",
+      "verify_cmd": "make test",
+      "max_retries": 3,
+      "on_fail_prompt": "Your refactor broke the code! The tests failed with exit code {{exit_code}}.\n\n```text\n{{stderr}}\n```\n\nPlease fix the regressions.",
+      "on_fail_route": "step_4_refactor",
+      "next": "step_5_review"
+    },
+    "step_5_review": {
+      "type": "action_loop",
+      "session_role": "reviewer",
+      "instruction": "@reviewer.md",
+      "approval_mode": "yolo",
+      "verify_cmd": "grep -q 'STATUS: APPROVED' .review",
+      "max_retries": 1,
+      "on_fail_prompt": "Read the .review file for feedback from the reviewer. Address the feedback by modifying the code accordingly.",
+      "on_fail_route": "step_4_refactor",
+      "next": "step_6_build"
+    },
+    "step_6_build": {
+      "type": "tool",
+      "command": "make build",
+      "on_fail_prompt": "The build failed. Please fix the issues before proceeding.",
+      "on_fail_route": "step_4_refactor",
+      "next": "step_update_docs"
+    },
+    "step_update_docs": {
+      "type": "action_loop",
+      "session_role": "writer",
+      "instruction": "@docs_updater.md",
+      "approval_mode": "yolo",
+      "verify_cmd": "test -f .docs_updated",
+      "max_retries": 1,
+      "on_fail_prompt": "Verification failed: You did not create the '.docs_updated' file. Please update the documentation and create the file.",
+      "on_fail_route": "step_update_docs",
+      "next": "step_7_pr"
+    },
+    "step_7_pr": {
+      "type": "tool",
+      "command": "say 'All steps completed successfully! Please create a pull request with the changes.'",
+      "is_terminal": true,
+      "next": "mark_done"
+    },
+    "mark_done": {
+      "type": "tool",
+      "command": "tenazas work complete",
+      "next": "done"
+    },
+    "escalate_to_human": {
+      "type": "end"
+    },
+    "done": {
+      "type": "end"
+    }
+  }
+}
