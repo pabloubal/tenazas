@@ -16,6 +16,12 @@
       "verify_cmd": "tenazas work status",
       "next": "done"
     },
+    "move_prd": {
+      "type": "tool",
+      "command": "mkdir -p docs/in-progress && mv docs/prd.md docs/in-progress/prd.md",
+      "next": "done",
+      "on_fail_prompt": "Can't move the PRD to the in-progress folder. Please check that the file exists and is not open in another program."
+    },
     "done": { "type": "end" }
   }
 }
