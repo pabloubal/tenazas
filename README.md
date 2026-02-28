@@ -155,6 +155,21 @@ Tenazas ensures continuity by passing the full output (logs) of each phase to th
 | `tenazas onboard` | Interactive setup wizard |
 | `tenazas work` | Task management subcommand |
 
+### Task Management (`tenazas work`)
+
+Manage the filesystem-based work queue from the command line.
+
+```bash
+tenazas work init                                          # Initialize task queue and show status
+tenazas work add "Title" "Description"                     # Add a task (default priority 0)
+tenazas work add --priority 5 "Title" "Description"        # Add a high-priority task
+tenazas work next                                          # Pick the next ready task
+tenazas work complete                                      # Mark current task as done
+tenazas work status                                        # Show queue status summary
+```
+
+Tasks are selected by **priority** (highest first). Tasks with equal priority are picked in **FIFO** order (oldest `created_at` first). A priority of `0` is the default and lowest.
+
 ## How it Works
 
 Tenazas acts as a stateful proxy. It maintains a registry of "Instances" (PIDs and ChatIDs). When a prompt or image arrives, Tenazas:

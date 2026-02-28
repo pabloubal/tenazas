@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"tenazas/internal/storage"
@@ -51,9 +52,37 @@ func handleWorkInit(tasksDir string) {
 	printStatusSummary(tasks)
 }
 
+// extractPriorityFlag separates --priority <int> from positional args.
+func extractPriorityFlag(args []string) (int, []string, error) {
+	var priority int
+	var positional []string
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--priority" {
+			if i+1 >= len(args) {
+				return 0, nil, fmt.Errorf("--priority requires a value")
+			}
+			p, err := strconv.Atoi(args[i+1])
+			if err != nil || p < 0 {
+				return 0, nil, fmt.Errorf("--priority must be a non-negative integer")
+			}
+			priority = p
+			i++
+		} else {
+			positional = append(positional, args[i])
+		}
+	}
+	return priority, positional, nil
+}
+
 func handleWorkAdd(tasksDir string, args []string) {
-	if len(args) < 2 {
-		fmt.Println("Usage: tenazas work add \"Title\" \"Description\"")
+	priority, positional, err := extractPriorityFlag(args)
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(positional) < 2 {
+		fmt.Println("Usage: tenazas work add [--priority <int>] \"Title\" \"Description\"")
 		os.Exit(1)
 	}
 
@@ -65,10 +94,11 @@ func handleWorkAdd(tasksDir string, args []string) {
 
 	task := &Task{
 		ID:        id,
-		Title:     args[0],
+		Title:     positional[0],
 		Status:    StatusTodo,
+		Priority:  priority,
 		CreatedAt: time.Now().Truncate(time.Second),
-		Content:   args[1],
+		Content:   positional[1],
 	}
 
 	taskPath := filepath.Join(tasksDir, id+".md")

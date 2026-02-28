@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -26,6 +27,7 @@ type Task struct {
 	ID              string     `json:"id"`
 	Title           string     `json:"title"`
 	Status          string     `json:"status"`
+	Priority        int        `json:"priority"`
 	FailureCount    int        `json:"failure_count"`
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`
@@ -145,6 +147,8 @@ func parseSimpleKV(lines []string) *Task {
 			t.Title = v
 		case "status":
 			t.Status = v
+		case "priority":
+			t.Priority, _ = strconv.Atoi(v)
 		case "failure_count":
 			t.FailureCount, _ = strconv.Atoi(v)
 		case "created_at", "updated_at":
@@ -205,25 +209,40 @@ func GetNextTaskID(tasksDir string) (string, error) {
 	return fmt.Sprintf("TSK-%06d", seq), nil
 }
 
-func SelectNextTask(tasks []*Task) *Task {
-	taskMap := make(map[string]*Task, len(tasks))
+func buildTaskMap(tasks []*Task) map[string]*Task {
+	m := make(map[string]*Task, len(tasks))
 	for _, t := range tasks {
-		taskMap[t.ID] = t
+		m[t.ID] = t
 	}
+	return m
+}
 
+func SelectNextTask(tasks []*Task) *Task {
+	taskMap := buildTaskMap(tasks)
+
+	var ready []*Task
 	for _, t := range tasks {
 		if t.IsReady(taskMap) {
-			return t
+			ready = append(ready, t)
 		}
 	}
-	return nil
+
+	if len(ready) == 0 {
+		return nil
+	}
+
+	sort.Slice(ready, func(i, j int) bool {
+		if ready[i].Priority != ready[j].Priority {
+			return ready[i].Priority > ready[j].Priority
+		}
+		return ready[i].CreatedAt.Before(ready[j].CreatedAt)
+	})
+
+	return ready[0]
 }
 
 func HasCycle(tasks []*Task) bool {
-	taskMap := make(map[string]*Task, len(tasks))
-	for _, t := range tasks {
-		taskMap[t.ID] = t
-	}
+	taskMap := buildTaskMap(tasks)
 
 	visited := make(map[string]bool)
 	recStack := make(map[string]bool)

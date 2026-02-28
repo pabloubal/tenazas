@@ -101,6 +101,50 @@ func TestSelectNextTask(t *testing.T) {
 	}
 }
 
+func TestSelectNextTaskWithPriority(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	tasks := []*Task{
+		{ID: "TSK-000001", Status: StatusTodo, Priority: 0, CreatedAt: base},
+		{ID: "TSK-000002", Status: StatusTodo, Priority: 5, CreatedAt: base.Add(1 * time.Second)},
+		{ID: "TSK-000003", Status: StatusTodo, Priority: 3, CreatedAt: base.Add(2 * time.Second)},
+	}
+
+	// Highest priority (5) should be selected first
+	next := SelectNextTask(tasks)
+	if next == nil || next.ID != "TSK-000002" {
+		t.Errorf("Expected TSK-000002 (priority 5) to be selected first, got %v", next)
+	}
+
+	// Mark TSK-000002 done, next highest priority (3) should be selected
+	tasks[1].Status = StatusDone
+	next = SelectNextTask(tasks)
+	if next == nil || next.ID != "TSK-000003" {
+		t.Errorf("Expected TSK-000003 (priority 3) to be selected second, got %v", next)
+	}
+
+	// Mark TSK-000003 done, lowest priority (0) should be selected
+	tasks[2].Status = StatusDone
+	next = SelectNextTask(tasks)
+	if next == nil || next.ID != "TSK-000001" {
+		t.Errorf("Expected TSK-000001 (priority 0) to be selected last, got %v", next)
+	}
+}
+
+func TestSelectNextTaskPriorityFIFO(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	tasks := []*Task{
+		{ID: "TSK-000001", Status: StatusTodo, Priority: 1, CreatedAt: base.Add(2 * time.Second)}, // newest
+		{ID: "TSK-000002", Status: StatusTodo, Priority: 1, CreatedAt: base},                      // oldest
+		{ID: "TSK-000003", Status: StatusTodo, Priority: 1, CreatedAt: base.Add(1 * time.Second)}, // middle
+	}
+
+	// Same priority — oldest CreatedAt (FIFO) should win
+	next := SelectNextTask(tasks)
+	if next == nil || next.ID != "TSK-000002" {
+		t.Errorf("Expected TSK-000002 (oldest, FIFO tiebreak) to be selected, got %v", next)
+	}
+}
+
 func TestCycleDetection(t *testing.T) {
 	tasks := []*Task{
 		{ID: "TSK-000001", BlockedBy: []string{"TSK-000002"}},

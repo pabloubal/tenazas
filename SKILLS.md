@@ -26,10 +26,12 @@ The core of every skill is a JSON graph:
   "skill_name": "my_skill",
   "initial_state": "start_node",
   "max_loops": 10,
+  "max_budget_usd": 5.00,
   "states": {
     "start_node": {
       "type": "action_loop",
       "session_role": "architect",
+      "model_tier": "high",
       "instruction": "@prompt_plan.md",
       "verify_cmd": "test -f plan.md",
       "next": "implementation_node"
@@ -54,6 +56,42 @@ The most common state. It follows a **Prompt -> Act -> Verify** cycle.
 ### `tool` (Automated Execution)
 A "headless" state that runs a shell command without LLM intervention. Useful for cleanup, git commits, or notification pings.
 -   Example: `"command": "git add . && git commit -m 'chore: automated checkpoint'"`
+
+### Per-State Overrides
+
+Each state can override session-level settings. These are optional and fall back to the session or config defaults when omitted.
+
+| Field            | Description                                                                 |
+|------------------|-----------------------------------------------------------------------------|
+| `model_tier`     | Override the model tier for this step (`"high"`, `"medium"`, `"low"`)       |
+| `approval_mode`  | Override the approval mode (`"PLAN"`, `"AUTO_EDIT"`, `"YOLO"`)             |
+| `max_retries`    | Max consecutive retries before requiring intervention (0 = no limit)        |
+| `pre_action_cmd` | Shell command to run before the LLM prompt (e.g., setup, reset state)       |
+| `post_action_cmd`| Shell command to run after a successful verification (e.g., cleanup)        |
+
+**Resolution cascade** (highest priority first):
+- **Model tier**: `state.model_tier` → `session.model_tier` → `config.default_model_tier`
+- **Approval mode**: `state.approval_mode` → `session.approval_mode`
+- **Budget**: `skill.max_budget_usd` → `session.max_budget_usd`
+
+Example: Use a powerful model for planning but a cheaper one for implementation:
+```json
+"plan": {
+  "type": "action_loop",
+  "model_tier": "high",
+  "instruction": "@prompt_plan.md",
+  "verify_cmd": "test -f plan.md",
+  "next": "implement"
+},
+"implement": {
+  "type": "action_loop",
+  "model_tier": "low",
+  "approval_mode": "YOLO",
+  "instruction": "@prompt_coder.md",
+  "verify_cmd": "@scripts/test.sh",
+  "next": "done"
+}
+```
 
 ---
 

@@ -172,10 +172,18 @@ Drives the skill execution loop using the `client.Client` interface for agent co
 - **Thought Parser**: Extracts chain-of-thought from streaming responses.
 - **Max Loops**: Configurable safety limit on autonomous iterations.
 
+### `internal/task` (Work Queue)
+Manages the filesystem-based task queue used by both the CLI and heartbeat.
+- **Status Constants**: `StatusTodo`, `StatusInProgress`, `StatusDone`, `StatusBlocked` — all status checks use typed constants, never raw strings.
+- **Ownership Model**: Tasks track `OwnerPID`, `OwnerInstanceID`, and `OwnerSessionID` when picked up. `ClearOwnership()` resets all three when a task completes or is blocked.
+- **Atomic Writes**: `WriteTask` uses a temp-file-then-rename pattern (matching `storage.go`) to prevent corruption on crash.
+- **`work` Subcommand**: `HandleWorkCommand` dispatches `init`, `add`, `next`, `complete`, and `status`. `init` runs `MigrateTasks` and prints a status summary. `next` sets ownership and `StartedAt`. `complete` sets `CompletedAt` and clears ownership.
+
 ### `internal/heartbeat` (Background Runner)
 Periodically scans for pending heartbeat files and runs skills automatically.
 - **Decoupled**: Uses `Notifier` interface instead of concrete Telegram dependency.
 - **Task Lifecycle**: Emits `TaskState` events (started/blocked/completed/failed).
+- **Ownership Tracking**: On task pickup, sets `OwnerPID`, `OwnerInstanceID` (`"heartbeat-<name>"`), and `StartedAt` (idempotent — only if not already set). On block, calls `ClearOwnership()` before persisting.
 
 ## 6. Operational Details
 
