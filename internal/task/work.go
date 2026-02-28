@@ -15,7 +15,7 @@ const taskIDPrefix = "TSK-"
 
 func HandleWorkCommand(storageDir string, args []string) {
 	if len(args) < 1 {
-		fmt.Println("Usage: tenazas work [init|add|next|complete|status|list|show]")
+		fmt.Println("Usage: tenazas work [init|add|next|complete|status|list|show|archive]")
 		os.Exit(1)
 	}
 
@@ -47,6 +47,8 @@ func HandleWorkCommand(storageDir string, args []string) {
 		handleWorkUnblock(tasksDir, args[1:])
 	case "reset":
 		handleWorkReset(tasksDir, args[1:])
+	case "archive":
+		handleWorkArchive(tasksDir, args[1:])
 	default:
 		fmt.Printf("Unknown command: %s\n", cmd)
 		os.Exit(1)
@@ -471,4 +473,38 @@ func handleWorkReset(tasksDir string, args []string) {
 
 	writeTaskOrDie(task)
 	fmt.Printf("Reset: %s\n", id)
+}
+
+func handleWorkArchive(tasksDir string, args []string) {
+	force := false
+	for _, arg := range args {
+		if arg == "--force" {
+			force = true
+		}
+	}
+
+	if !force {
+		archived, err := CheckAndArchive(tasksDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Archive error: %v\n", err)
+			os.Exit(1)
+		}
+		if archived {
+			fmt.Println("Archived all completed tasks")
+		} else {
+			fmt.Println("No archival: not all tasks are done")
+		}
+		return
+	}
+
+	count, err := ForceArchive(tasksDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Archive error: %v\n", err)
+		os.Exit(1)
+	}
+	if count == 0 {
+		fmt.Println("No completed tasks to archive")
+	} else {
+		fmt.Printf("Archived %d completed tasks\n", count)
+	}
 }

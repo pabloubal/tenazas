@@ -940,3 +940,303 @@ func count(slice []string, val string) int {
 	}
 	return n
 }
+
+// writeTestLog creates a .jsonl log file for a task in tasksDir/logs/.
+func writeTestLog(t *testing.T, tasksDir, taskID, content string) {
+	t.Helper()
+	logsDir := filepath.Join(tasksDir, "logs")
+	if err := os.MkdirAll(logsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(logsDir, taskID+".jsonl")
+	if err := os.WriteFile(logPath, []byte(content), 0644); err != nil {
+		t.Fatalf("writeTestLog(%s): %v", taskID, err)
+	}
+}
+
+// countArchiveEntries returns the number of timestamped subdirs under archive/.
+func countArchiveEntries(t *testing.T, tasksDir string) int {
+	t.Helper()
+	archiveRoot := filepath.Join(tasksDir, "archive")
+	entries, err := os.ReadDir(archiveRoot)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0
+		}
+		t.Fatalf("ReadDir(archive): %v", err)
+	}
+	return len(entries)
+}
+
+// getArchiveTimestampDir returns the path of the single timestamped archive subdirectory.
+func getArchiveTimestampDir(t *testing.T, tasksDir string) string {
+	t.Helper()
+	archiveRoot := filepath.Join(tasksDir, "archive")
+	entries, err := os.ReadDir(archiveRoot)
+	if err != nil {
+		t.Fatalf("ReadDir(archive): %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("Expected 1 archive timestamp dir, got %d", len(entries))
+	}
+	return filepath.Join(archiveRoot, entries[0].Name())
+}
+
+// ---------------------------------------------------------------------------
+// work archive --force (ForceArchive)
+// ---------------------------------------------------------------------------
+
+func TestWorkArchiveForce(t *testing.T) {
+	_, tasksDir, cleanup := setupTasksDir(t)
+	defer cleanup()
+
+	// 3 done tasks
+	writeTestTask(t, tasksDir, &Task{ID: "TSK-000001", Title: "Done 1", Status: StatusDone})
+	writeTestTask(t, tasksDir, &Task{ID: "TSK-000002", Title: "Done 2", Status: StatusDone})
+	writeTestTask(t, tasksDir, &Task{ID: "TSK-000003", Title: "Done 3", Status: StatusDone})
+	// 2 active tasks
+	writeTestTask(t, tasksDir, &Task{ID: "TSK-000004", Title: "Todo 4", Status: StatusTodo})
+	writeTestTask(t, tasksDir, &Task{ID: "TSK-000005", Title: "InProgress 5", Status: StatusInProgress})
+
+	// Log for a done task and an active task
+	writeTestLog(t, tasksDir, "TSK-000001", `{"event":"run"}`)
+	writeTestLog(t, tasksDir, "TSK-000004", `{"event":"pending"}`)
+
+	// Act
+	count, err := ForceArchive(tasksDir)
+
+	// Assert: return value
+	if err != nil {
+		t.Fatalf("ForceArchive returned error: %v", err)
+	}
+	if count != 3 {
+		t.Errorf("ForceArchive count = %d, want 3", count)
+	}
+
+	// Done task files gone from root
+	for _, id := range []string{"TSK-000001", "TSK-000002", "TSK-000003"} {
+		p := filepath.Join(tasksDir, id+".md")
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("Done task %s should be removed from root", id)
+		}
+	}
+
+	// Active task files remain
+	for _, id := range []string{"TSK-000004", "TSK-000005"} {
+		p := filepath.Join(tasksDir, id+".md")
+		if _, err := os.Stat(p); os.IsNotExist(err) {
+			t.Errorf("Active task %s should remain in root", id)
+		}
+	}
+
+	// Exactly 1 timestamped archive subdirectory
+	archiveDir := getArchiveTimestampDir(t, tasksDir)
+
+	// Archived directory contains all 3 done task .md files
+	for _, id := range []string{"TSK-000001", "TSK-000002", "TSK-000003"} {
+		p := filepath.Join(archiveDir, id+".md")
+		if _, err := os.Stat(p); os.IsNotExist(err) {
+			t.Errorf("Archived task %s.md not found in archive dir", id)
+		}
+	}
+
+	// Archived logs/ contains TSK-000001.jsonl
+	archivedLog := filepath.Join(archiveDir, "logs", "TSK-000001.jsonl")
+	if _, err := os.Stat(archivedLog); os.IsNotExist(err) {
+		t.Error("TSK-000001.jsonl should be archived in logs/")
+	}
+
+	// Active task's log remains in original location
+	activeLog := filepath.Join(tasksDir, "logs", "TSK-000004.jsonl")
+	if _, err := os.Stat(activeLog); os.IsNotExist(err) {
+		t.Error("TSK-000004.jsonl should remain in original logs/")
+	}
+
+	// ListTasks returns only the 2 active tasks
+	remaining, err := ListTasks(tasksDir)
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(remaining) != 2 {
+		t.Errorf("ListTasks returned %d tasks, want 2", len(remaining))
+	}
+}
+
+func TestWorkArchiveNoForce(t *testing.T) {
+	_, tasksDir, cleanup := setupTasksDir(t)
+	defer cleanup()
+
+	// 2 done + 1 todo
+	writeTestTask(t, tasksDir, &Task{ID: "TSK-000001", Title: "Done 1", Status: StatusDone})
+	writeTestTask(t, tasksDir, &Task{ID: "TSK-000002", Title: "Done 2", Status: StatusDone})
+	writeTestTask(t, tasksDir, &Task{ID: "TSK-000003", Title: "Todo 3", Status: StatusTodo})
+
+	// Round 1: mixed statuses — CheckAndArchive should not archive
+	archived, err := CheckAndArchive(tasksDir)
+	if err != nil {
+		t.Fatalf("CheckAndArchive (round 1) error: %v", err)
+	}
+	if archived {
+		t.Error("CheckAndArchive should return false when not all tasks are done")
+	}
+
+	// All 3 files must remain
+	tasks, _ := ListTasks(tasksDir)
+	if len(tasks) != 3 {
+		t.Errorf("All 3 tasks should remain, got %d", len(tasks))
+	}
+
+	// No archive dir created
+	if countArchiveEntries(t, tasksDir) != 0 {
+		t.Error("No archive directory should exist after failed gate")
+	}
+
+	// Round 2: mark the todo as done, now all are done
+	tk3 := readTestTask(t, tasksDir, "TSK-000003")
+	tk3.Status = StatusDone
+	now := time.Now().Truncate(time.Second)
+	tk3.CompletedAt = &now
+	if err := WriteTask(tk3.FilePath, tk3); err != nil {
+		t.Fatal(err)
+	}
+
+	archived, err = CheckAndArchive(tasksDir)
+	if err != nil {
+		t.Fatalf("CheckAndArchive (round 2) error: %v", err)
+	}
+	if !archived {
+		t.Error("CheckAndArchive should return true when all tasks are done")
+	}
+
+	// All task files moved to archive
+	remaining, _ := ListTasks(tasksDir)
+	if len(remaining) != 0 {
+		t.Errorf("Expected 0 remaining tasks, got %d", len(remaining))
+	}
+
+	// Exactly 1 archive timestamp dir
+	if countArchiveEntries(t, tasksDir) != 1 {
+		t.Errorf("Expected 1 archive entry, got %d", countArchiveEntries(t, tasksDir))
+	}
+}
+
+func TestForceArchiveIntegrityCheck(t *testing.T) {
+	_, tasksDir, cleanup := setupTasksDir(t)
+	defer cleanup()
+
+	// TSK-000001: done, blocks TSK-000002
+	writeTestTask(t, tasksDir, &Task{
+		ID:     "TSK-000001",
+		Title:  "Done Blocker",
+		Status: StatusDone,
+		Blocks: []string{"TSK-000002"},
+	})
+	// TSK-000002: todo, blocked by TSK-000001
+	writeTestTask(t, tasksDir, &Task{
+		ID:        "TSK-000002",
+		Title:     "Active Dependent",
+		Status:    StatusTodo,
+		BlockedBy: []string{"TSK-000001"},
+	})
+
+	// Act
+	count, err := ForceArchive(tasksDir)
+
+	// Assert: error returned, zero archived
+	if err == nil {
+		t.Fatal("ForceArchive should return an error for integrity violation")
+	}
+	if count != 0 {
+		t.Errorf("ForceArchive count = %d, want 0", count)
+	}
+
+	// Error mentions both task IDs
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "TSK-000002") {
+		t.Errorf("Error should mention active task TSK-000002, got: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, "TSK-000001") {
+		t.Errorf("Error should mention done task TSK-000001, got: %s", errMsg)
+	}
+
+	// No files moved
+	for _, id := range []string{"TSK-000001", "TSK-000002"} {
+		p := filepath.Join(tasksDir, id+".md")
+		if _, err := os.Stat(p); os.IsNotExist(err) {
+			t.Errorf("Task %s should remain (no files moved on integrity error)", id)
+		}
+	}
+
+	// No archive directory created
+	if countArchiveEntries(t, tasksDir) != 0 {
+		t.Error("No archive directory should exist after integrity check failure")
+	}
+}
+
+func TestForceArchiveNoDoneTasks(t *testing.T) {
+	_, tasksDir, cleanup := setupTasksDir(t)
+	defer cleanup()
+
+	writeTestTask(t, tasksDir, &Task{ID: "TSK-000001", Title: "Todo 1", Status: StatusTodo})
+	writeTestTask(t, tasksDir, &Task{ID: "TSK-000002", Title: "Todo 2", Status: StatusTodo})
+
+	count, err := ForceArchive(tasksDir)
+	if err != nil {
+		t.Fatalf("ForceArchive returned error: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("ForceArchive count = %d, want 0", count)
+	}
+
+	// No archive directory created
+	if countArchiveEntries(t, tasksDir) != 0 {
+		t.Error("No archive directory should exist when no done tasks")
+	}
+
+	// Both tasks remain
+	tasks, _ := ListTasks(tasksDir)
+	if len(tasks) != 2 {
+		t.Errorf("Expected 2 tasks remaining, got %d", len(tasks))
+	}
+}
+
+func TestForceArchiveAllDone(t *testing.T) {
+	_, tasksDir, cleanup := setupTasksDir(t)
+	defer cleanup()
+
+	writeTestTask(t, tasksDir, &Task{ID: "TSK-000001", Title: "Done 1", Status: StatusDone})
+	writeTestTask(t, tasksDir, &Task{ID: "TSK-000002", Title: "Done 2", Status: StatusDone})
+	writeTestLog(t, tasksDir, "TSK-000001", `{"event":"a"}`)
+	writeTestLog(t, tasksDir, "TSK-000002", `{"event":"b"}`)
+
+	count, err := ForceArchive(tasksDir)
+	if err != nil {
+		t.Fatalf("ForceArchive returned error: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("ForceArchive count = %d, want 2", count)
+	}
+
+	// Both task files archived
+	archiveDir := getArchiveTimestampDir(t, tasksDir)
+	for _, id := range []string{"TSK-000001", "TSK-000002"} {
+		p := filepath.Join(archiveDir, id+".md")
+		if _, err := os.Stat(p); os.IsNotExist(err) {
+			t.Errorf("Archived task %s.md not found", id)
+		}
+	}
+
+	// Both log files archived
+	for _, id := range []string{"TSK-000001", "TSK-000002"} {
+		p := filepath.Join(archiveDir, "logs", id+".jsonl")
+		if _, err := os.Stat(p); os.IsNotExist(err) {
+			t.Errorf("Archived log %s.jsonl not found", id)
+		}
+	}
+
+	// ListTasks returns empty
+	remaining, _ := ListTasks(tasksDir)
+	if len(remaining) != 0 {
+		t.Errorf("Expected 0 remaining tasks, got %d", len(remaining))
+	}
+}

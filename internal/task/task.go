@@ -394,35 +394,90 @@ func CheckAndArchive(tasksDir string) (bool, error) {
 		}
 	}
 
-	timestamp := time.Now().Format(time.RFC3339)
-	archiveDir := filepath.Join(tasksDir, "archive", timestamp)
-	if err := os.MkdirAll(archiveDir, 0755); err != nil {
+	if err := archiveTaskFiles(tasksDir, tasks); err != nil {
 		return false, err
 	}
+	return true, nil
+}
 
+// ForceArchive selectively archives only done tasks, leaving active tasks in place.
+// Returns an error if any active task has a BlockedBy reference to a done task.
+func ForceArchive(tasksDir string) (int, error) {
+	tasks, err := ListTasks(tasksDir)
+	if err != nil || len(tasks) == 0 {
+		return 0, err
+	}
+
+	var doneTasks, activeTasks []*Task
 	for _, t := range tasks {
-		destPath := filepath.Join(archiveDir, filepath.Base(t.FilePath))
-		if err := os.Rename(t.FilePath, destPath); err != nil {
-			fmt.Printf("Error moving task %s to archive: %v\n", t.ID, err)
+		if t.Status == StatusDone {
+			doneTasks = append(doneTasks, t)
+		} else {
+			activeTasks = append(activeTasks, t)
 		}
 	}
 
-	logsDir := filepath.Join(tasksDir, "logs")
-	if logFiles, _ := filepath.Glob(filepath.Join(logsDir, "*.jsonl")); len(logFiles) > 0 {
-		archiveLogs := filepath.Join(archiveDir, "logs")
-		if err := os.MkdirAll(archiveLogs, 0755); err != nil {
-			fmt.Printf("Error creating archive logs dir: %v\n", err)
-		} else {
-			for _, f := range logFiles {
-				dest := filepath.Join(archiveLogs, filepath.Base(f))
-				if err := os.Rename(f, dest); err != nil {
-					fmt.Printf("Error moving log %s to archive: %v\n", f, err)
-				}
+	if len(doneTasks) == 0 {
+		return 0, nil
+	}
+
+	doneIDs := make(map[string]bool, len(doneTasks))
+	for _, t := range doneTasks {
+		doneIDs[t.ID] = true
+	}
+
+	for _, t := range activeTasks {
+		for _, depID := range t.BlockedBy {
+			if doneIDs[depID] {
+				return 0, fmt.Errorf("cannot archive: active task %s still references completed task %s", t.ID, depID)
 			}
 		}
 	}
 
-	return true, nil
+	if err := archiveTaskFiles(tasksDir, doneTasks); err != nil {
+		return 0, err
+	}
+	return len(doneTasks), nil
+}
+
+// archiveTaskFiles creates a timestamped archive directory and moves the given
+// task files and their associated log files into it.
+func archiveTaskFiles(tasksDir string, tasks []*Task) error {
+	timestamp := time.Now().Format(time.RFC3339)
+	archiveDir := filepath.Join(tasksDir, "archive", timestamp)
+	if err := os.MkdirAll(archiveDir, 0755); err != nil {
+		return err
+	}
+
+	for _, t := range tasks {
+		dest := filepath.Join(archiveDir, filepath.Base(t.FilePath))
+		if err := os.Rename(t.FilePath, dest); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not move task %s: %v\n", t.ID, err)
+		}
+	}
+
+	logsDir := filepath.Join(tasksDir, "logs")
+	archiveLogs := filepath.Join(archiveDir, "logs")
+	logsDirCreated := false
+	for _, t := range tasks {
+		logFile := filepath.Join(logsDir, t.ID+".jsonl")
+		if _, err := os.Stat(logFile); err != nil {
+			continue
+		}
+		if !logsDirCreated {
+			if err := os.MkdirAll(archiveLogs, 0755); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: could not create archive logs dir: %v\n", err)
+				break
+			}
+			logsDirCreated = true
+		}
+		dest := filepath.Join(archiveLogs, t.ID+".jsonl")
+		if err := os.Rename(logFile, dest); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not move log %s: %v\n", logFile, err)
+		}
+	}
+
+	return nil
 }
 
 func ListTasks(dir string) ([]*Task, error) {

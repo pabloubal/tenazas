@@ -169,6 +169,15 @@ tenazas work status                                        # Show queue status s
 tenazas work list                                          # List all tasks in a table
 tenazas work show TSK-000001                               # Show full detail for a task
 tenazas work show 1                                        # Same (bare numbers are normalized)
+tenazas work edit 1 --title "New" --status done            # Edit task fields with validation
+tenazas work edit 1 --skill lint --labels "bug,backend"    # Set skill binding and labels
+tenazas work delete 1                                      # Delete a task (rejects if it blocks active tasks)
+tenazas work dep add 2 1                                   # Add dependency: TSK-000002 blocked by TSK-000001
+tenazas work dep remove 2 1                                # Remove dependency
+tenazas work unblock 1                                     # Reset blocked task → todo, clear FailureCount
+tenazas work reset 1                                       # Full reset → todo, clear all runtime fields
+tenazas work archive                                       # Archive tasks (all must be done)
+tenazas work archive --force                               # Selectively archive only completed tasks
 ```
 
 Tasks are selected by **priority** (highest first). Tasks with equal priority are picked in **FIFO** order (oldest `created_at` first). A priority of `0` is the default and lowest.
