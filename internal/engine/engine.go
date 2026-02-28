@@ -194,7 +194,7 @@ func (e *Engine) publishTaskStatus(sessID string, state string, details map[stri
 func (e *Engine) executeActionLoop(skill *models.SkillGraph, state *models.StateDef, sess *models.Session) {
 	if state.PreActionCmd != "" && sess.RetryCount == 0 {
 		if exitCode, output := e.RunShell(state.PreActionCmd, sess.CWD); exitCode != 0 {
-			e.log(sess, events.AuditCmdResult, "engine", fmt.Sprintf("pre_action_cmd failed (Exit Code: %d): %s", exitCode, output))
+			e.logCmd(sess, "engine", fmt.Sprintf("pre_action_cmd failed (Exit Code: %d): %s", exitCode, output), exitCode)
 			e.handleRetry(state, sess, fmt.Sprintf("Pre-action command failed (Exit Code: %d):\n%s", exitCode, output))
 			return
 		}
@@ -214,7 +214,7 @@ func (e *Engine) executeActionLoop(skill *models.SkillGraph, state *models.State
 	}
 
 	exitCode, output := e.RunShell(state.VerifyCmd, sess.CWD)
-	e.log(sess, events.AuditCmdResult, "engine", fmt.Sprintf("Verification Result (Exit Code: %d):\n%s", exitCode, output))
+	e.logCmd(sess, "engine", fmt.Sprintf("Verification Result (Exit Code: %d):\n%s", exitCode, output), exitCode)
 
 	if exitCode == 0 {
 		e.completeState(state, sess, output)
@@ -226,7 +226,7 @@ func (e *Engine) executeActionLoop(skill *models.SkillGraph, state *models.State
 func (e *Engine) executeTool(state *models.StateDef, sess *models.Session) {
 	e.log(sess, events.AuditInfo, "engine", "Executing tool: "+state.Command)
 	exitCode, out := e.RunShell(state.Command, sess.CWD)
-	e.log(sess, events.AuditCmdResult, "engine", fmt.Sprintf("Exit Code: %d\nOutput: %s", exitCode, out))
+	e.logCmd(sess, "engine", fmt.Sprintf("Exit Code: %d\nOutput: %s", exitCode, out), exitCode)
 
 	sess.RetryCount = 0
 	sess.PendingFeedback = out
@@ -334,7 +334,7 @@ func (e *Engine) handleLoopFailure(skill *models.SkillGraph, state *models.State
 	if sess.LoopCount >= limit {
 		sess.PendingFeedback = feedback
 		sess.Status = models.StatusIntervention
-	} else if state.MaxRetries > 0 && sess.RetryCount < state.MaxRetries {
+	} else if state.MaxRetries > 0 && sess.RetryCount <= state.MaxRetries {
 		// Retry the same state with feedback before following fail_route
 		sess.PendingFeedback = feedback
 	} else {
@@ -413,7 +413,7 @@ func (e *Engine) ExecuteCommand(sess *models.Session, cmd string) {
 	e.resumeAndRun(sess, func() {
 		e.log(sess, events.AuditInfo, "user", fmt.Sprintf("User approved command: %s", cmd))
 		exitCode, output := e.RunShell(cmd, sess.CWD)
-		e.log(sess, events.AuditCmdResult, "engine", fmt.Sprintf("Exit Code: %d\n%s", exitCode, output))
+		e.logCmd(sess, "engine", fmt.Sprintf("Exit Code: %d\n%s", exitCode, output), exitCode)
 		e.executePromptInternal(sess, output)
 	})
 }
@@ -584,6 +584,15 @@ func (e *Engine) log(sess *models.Session, eventType, source, content string) {
 		Type:    eventType,
 		Source:  source,
 		Content: content,
+	})
+}
+
+func (e *Engine) logCmd(sess *models.Session, source, content string, exitCode int) {
+	e.Sm.AppendAudit(sess, events.AuditEntry{
+		Type:     events.AuditCmdResult,
+		Source:   source,
+		Content:  content,
+		ExitCode: exitCode,
 	})
 }
 

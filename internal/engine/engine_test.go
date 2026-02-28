@@ -3,6 +3,7 @@ package engine
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -342,6 +343,112 @@ func TestBuildPromptNormalFeedback(t *testing.T) {
 	expected := "Do the thing\n\n### FEEDBACK FROM PREVIOUS ATTEMPT:\nError: file not found"
 	if result != expected {
 		t.Errorf("BuildPrompt normal feedback:\n  got:  %q\n  want: %q", result, expected)
+	}
+}
+
+func TestBuildPrompt_ResumePreservesInstruction(t *testing.T) {
+	storageDir, _ := os.MkdirTemp("", "tenazas-bp-preserve-*")
+	defer os.RemoveAll(storageDir)
+
+	sm := session.NewManager(storageDir)
+	engine := NewEngine(sm, newTestClient("echo", storageDir), "gemini", 5)
+
+	state := &models.StateDef{
+		Instruction: "Implement the login endpoint using JWT tokens",
+	}
+	sess := &models.Session{
+		ID:              "bp-preserve",
+		CWD:             ".",
+		Status:          models.StatusRunning,
+		RoleCache:       make(map[string]string),
+		PendingFeedback: "Session resumed. Please continue from where you left off.",
+	}
+
+	result := engine.BuildPrompt(state, sess)
+
+	// Assertion 1: result contains the instruction text
+	if !strings.Contains(result, "Implement the login endpoint using JWT tokens") {
+		t.Errorf("expected prompt to contain instruction, got:\n%s", result)
+	}
+
+	// Assertion 2: result contains the SESSION CONTEXT header
+	if !strings.Contains(result, "### SESSION CONTEXT:") {
+		t.Errorf("expected prompt to contain '### SESSION CONTEXT:', got:\n%s", result)
+	}
+
+	// Assertion 3: result contains the resume sentinel
+	if !strings.Contains(result, "Session resumed. Please continue from where you left off.") {
+		t.Errorf("expected prompt to contain resume sentinel, got:\n%s", result)
+	}
+
+	// Assertion 4: instruction appears BEFORE the session context header
+	instrIdx := strings.Index(result, "Implement the login endpoint using JWT tokens")
+	ctxIdx := strings.Index(result, "### SESSION CONTEXT:")
+	if instrIdx >= ctxIdx {
+		t.Errorf("instruction (idx %d) must appear before session context header (idx %d)\nfull prompt:\n%s", instrIdx, ctxIdx, result)
+	}
+}
+
+func TestBuildPrompt_NonResumePathsUnchanged(t *testing.T) {
+	storageDir, _ := os.MkdirTemp("", "tenazas-bp-nonresume-*")
+	defer os.RemoveAll(storageDir)
+
+	sm := session.NewManager(storageDir)
+	eng := NewEngine(sm, newTestClient("echo", storageDir), "gemini", 5)
+
+	tests := []struct {
+		name            string
+		instruction     string
+		pendingFeedback string
+		wantExact       string
+	}{
+		{
+			name:            "no feedback returns only instruction",
+			instruction:     "Run the migration",
+			pendingFeedback: "",
+			wantExact:       "Run the migration",
+		},
+		{
+			name:            "normal feedback uses FEEDBACK header",
+			instruction:     "Run the migration",
+			pendingFeedback: "Error: file not found",
+			wantExact:       "Run the migration\n\n### FEEDBACK FROM PREVIOUS ATTEMPT:\nError: file not found",
+		},
+		{
+			name:            "empty instruction with resume",
+			instruction:     "",
+			pendingFeedback: resumeSentinel,
+			wantExact:       "\n\n### SESSION CONTEXT:\n" + resumeSentinel,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			state := &models.StateDef{Instruction: tc.instruction}
+			sess := &models.Session{
+				ID:              "bp-nr-" + tc.name,
+				CWD:             ".",
+				RoleCache:       make(map[string]string),
+				PendingFeedback: tc.pendingFeedback,
+			}
+
+			got := eng.BuildPrompt(state, sess)
+			if got != tc.wantExact {
+				t.Errorf("BuildPrompt(%q, feedback=%q):\n  got:  %q\n  want: %q", tc.instruction, tc.pendingFeedback, got, tc.wantExact)
+			}
+
+			// Non-resume cases must never contain SESSION CONTEXT header
+			if tc.pendingFeedback != resumeSentinel && strings.Contains(got, "### SESSION CONTEXT:") {
+				t.Errorf("non-resume path should not contain SESSION CONTEXT header, got:\n%s", got)
+			}
+
+			// Normal feedback must use FEEDBACK header, not SESSION CONTEXT
+			if tc.pendingFeedback != "" && tc.pendingFeedback != resumeSentinel {
+				if !strings.Contains(got, "### FEEDBACK FROM PREVIOUS ATTEMPT:") {
+					t.Errorf("expected FEEDBACK FROM PREVIOUS ATTEMPT header, got:\n%s", got)
+				}
+			}
+		})
 	}
 }
 
