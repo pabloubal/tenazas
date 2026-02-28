@@ -92,7 +92,7 @@
       "max_retries": 1,
       "on_fail_prompt": "Verification failed: You did not create the '.docs_updated' file. Please update the documentation and create the file.",
       "on_fail_route": "step_update_docs",
-      "next": "step_7_pr"
+      "next": "step_7_commit"
     },
     "step_7_commit": {
       "type": "action_loop",
