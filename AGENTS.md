@@ -133,7 +133,7 @@ Manages the lifecycle of a session.
 Strategy pattern for pluggable coding-agent CLIs.
 - **Client Interface**: `Run(opts RunOptions, onChunk, onSessionID)` — the contract every backend must implement.
 - **RunOptions**: Unified struct carrying `NativeSID`, `Prompt`, `CWD`, `ApprovalMode`, `Yolo`, `ModelTier`, and `MaxBudgetUSD`. Eliminates per-client parameter divergence.
-- **Model Tiers**: Generic `high` / `medium` / `low` tiers. Each client maps tiers to concrete model names via `SetModels()`. Tier resolution cascade: StateDef → Session → default (none).
+- **Model Tiers**: Generic `high` / `medium` / `low` tiers. Each client maps tiers to concrete model names via `SetModels()`. Tier resolution cascade: StateDef → Session → Config `default_model_tier` → none.
 - **Permission Mode Mapping**: Tenazas modes (`PLAN`, `AUTO_EDIT`, `YOLO`) are mapped internally by each client:
   - Gemini: `--approval-mode PLAN|AUTO_EDIT` or `-y`
   - Claude Code: `--permission-mode plan|acceptEdits` or `--dangerously-skip-permissions`
@@ -161,12 +161,13 @@ Provides the terminal interface.
 - **Streaming**: Real-time `fmt.Print` of agent chunks.
 - **Banner**: Shows the active client name at startup (e.g., `[gemini]`, `[claude-code]`).
 - **Menu**: Interactive paginated list for session resumption.
-- **Immersive Mode**: Split-pane with thought drawer and footer bar. When a task is active, the footer displays a shimmer-animated intent indicator instead of the default keybindings.
+- **Immersive Mode**: Split-pane with thought drawer and footer bar. When a task is active, the footer displays a shimmer-animated intent indicator instead of the default keybindings. During skill execution, the footer prefixes the intent with the active step name (e.g., `Step validate: Running tests`).
 
 ### `internal/engine` (The Brain)
 Drives the skill execution loop using the `client.Client` interface for agent communication.
 - **RunOptions Construction**: Builds `RunOptions` per call with cascading overrides — model tier: `StateDef.ModelTier` > `Session.ModelTier`; budget: `SkillGraph.MaxBudgetUSD` > `Session.MaxBudgetUSD`.
 - **Prompt Construction**: `BuildPrompt()` assembles the final prompt from the state instruction and session context. On resume, the instruction is preserved alongside a `### SESSION CONTEXT:` header. For retry/feedback loops, the instruction is followed by a `### FEEDBACK FROM PREVIOUS ATTEMPT:` section containing prior output.
+- **Structured Audit Logging**: Command results are logged with their exit codes via `logCmd()`, enabling downstream consumers to distinguish success from failure programmatically.
 - **Intervention System**: Pause/retry/abort for failed tool calls.
 - **Thought Parser**: Extracts chain-of-thought from streaming responses.
 - **Max Loops**: Configurable safety limit on autonomous iterations.
@@ -189,6 +190,7 @@ Periodically scans for pending heartbeat files and runs skills automatically.
 ### Configuration
 Config is loaded via `~/.tenazas/config.json`, then overridden by Environment Variables:
 - `default_client`: Which agent backend to use (e.g., `"gemini"`, `"claude-code"`). Defaults to `"gemini"`.
+- `default_model_tier`: Default model tier for new sessions (e.g., `"high"`, `"medium"`, `"low"`). Optional; when omitted, no tier is set and clients use their own defaults.
 - `clients`: Map of client-specific settings:
   ```json
   {

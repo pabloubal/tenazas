@@ -58,6 +58,7 @@ Or create `~/.tenazas/config.json` manually:
 {
   "storage_dir": "/Users/youruser/.tenazas",
   "default_client": "gemini",
+  "default_model_tier": "high",
   "clients": {
     "gemini": {
       "bin_path": "gemini",
@@ -84,6 +85,7 @@ _You can also use environment variables: `TENAZAS_TG_TOKEN` and `TENAZAS_ALLOWED
 | Field                      | Description                                                      |
 | -------------------------- | ---------------------------------------------------------------- |
 | `default_client`           | Agent backend for new sessions (`"gemini"`, `"claude-code"`)     |
+| `default_model_tier`       | Default model tier for new sessions (`"high"`, `"medium"`, `"low"`) |
 | `clients.<name>.bin_path`  | Path to the agent CLI binary                                     |
 | `clients.<name>.models`    | Model tier mapping: `high`, `medium`, `low` → actual model names |
 | `channel.type`             | Channel type: `"telegram"` or `"disabled"`                       |
