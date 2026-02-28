@@ -1522,22 +1522,66 @@ func (c *CLI) writeEscape(seq string) {
 	c.write(seq)
 }
 
-// renderPermission displays a tool permission request in the scroll region.
+// renderPermission replaces the prompt sandwich area with a focused
+// permission panel showing the tool request and keybinding options.
 func (c *CLI) renderPermission(req client.PermissionRequest) {
 	var sb strings.Builder
-	sb.WriteString("\n")
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	rows, cols := c.getTermSize()
+	sb.WriteString(escSaveCursor)
+
 	kindColor := "\x1b[33m" // yellow for execute
+	kindLabel := "Execute"
 	if req.Kind == "read" {
 		kindColor = escCyan
+		kindLabel = "Read"
 	} else if req.Kind == "edit" {
 		kindColor = "\x1b[35m" // magenta
+		kindLabel = "Edit"
 	}
-	sb.WriteString(fmt.Sprintf("%s%s● %s%s", Margin, kindColor, req.Title, escReset))
+
+	// Top separator with kind badge
+	topSep := fmt.Sprintf("── %s ─", kindLabel)
+	remaining := cols - len(topSep)
+	if remaining > 0 {
+		topSep += strings.Repeat("─", remaining)
+	}
+	fmt.Fprintf(&sb, escMoveTo, rows-4)
+	sb.WriteString(escClearLine)
+	sb.WriteString(kindColor)
+	sb.WriteString(topSep)
+	sb.WriteString(escReset)
+
+	// Title row
+	fmt.Fprintf(&sb, escMoveTo, rows-3)
+	sb.WriteString(escClearLine)
+	title := "  " + req.Title
+	if len(title) > cols {
+		title = title[:cols-3] + "..."
+	}
+	sb.WriteString(title)
+
+	// Command row (or blank)
+	fmt.Fprintf(&sb, escMoveTo, rows-2)
+	sb.WriteString(escClearLine)
 	if req.Command != "" {
-		sb.WriteString(fmt.Sprintf("\n%s  %s%s%s", Margin, escDim, req.Command, escReset))
+		cmd := "  " + escDim + req.Command + escReset
+		sb.WriteString(cmd)
 	}
-	sb.WriteString("\n")
-	// Show keybindings for the standard options
+
+	// Bottom separator
+	fmt.Fprintf(&sb, escMoveTo, rows-1)
+	sb.WriteString(escClearLine)
+	sb.WriteString(kindColor)
+	sb.WriteString(strings.Repeat("─", cols))
+	sb.WriteString(escReset)
+
+	// Options row (replaces footer line 2)
+	fmt.Fprintf(&sb, escMoveTo, rows)
+	sb.WriteString(escClearLine)
+	var opts strings.Builder
 	for _, opt := range req.Options {
 		key := ""
 		switch opt.Kind {
@@ -1551,12 +1595,13 @@ func (c *CLI) renderPermission(req client.PermissionRequest) {
 			key = "N"
 		}
 		if key != "" {
-			sb.WriteString(fmt.Sprintf("%s  %s[%s]%s %s", Margin, escDim, key, escReset, opt.Name))
-			sb.WriteString("  ")
+			fmt.Fprintf(&opts, "[%s%s%s] %s   ", kindColor, key, escReset, opt.Name)
 		}
 	}
-	sb.WriteString("\n")
-	c.writeInScrollRegion(sb.String())
+	fmt.Fprintf(&sb, "%-*s", cols, opts.String())
+
+	sb.WriteString(escRestoreCursor)
+	c.writeLocked(sb.String())
 }
 
 // handlePermissionKeyLocked processes a keypress while a permission prompt is active.
@@ -1607,7 +1652,8 @@ func findOptionByKind(opts []client.PermissionOption, kind string) string {
 	return ""
 }
 
-// writePermissionFeedback shows the user's decision inline after a permission prompt.
+// writePermissionFeedback shows the user's decision inline in the scroll
+// region and restores the normal prompt sandwich area.
 func (c *CLI) writePermissionFeedback(title, kind string) {
 	var label, color string
 	switch kind {
@@ -1628,4 +1674,15 @@ func (c *CLI) writePermissionFeedback(title, kind string) {
 		color = "\x1b[33m" // yellow
 	}
 	c.writeInScrollRegion(fmt.Sprintf("%s  %s└ %s%s\n", Margin, color, label, escReset))
+	// Restore the normal prompt sandwich area
+	c.redrawFooterAndPrompt()
+}
+
+// redrawFooterAndPrompt restores the normal footer and prompt sandwich area.
+func (c *CLI) redrawFooterAndPrompt() {
+	var sb strings.Builder
+	c.mu.Lock()
+	c.redrawAllAtomic(&sb)
+	c.writeLocked(sb.String())
+	c.mu.Unlock()
 }
