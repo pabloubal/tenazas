@@ -56,7 +56,9 @@ type Session struct {
 	Client              string            `json:"client,omitempty"`
 	CWD                 string            `json:"cwd"`
 	Title               string            `json:"title"`
+	Summary             string            `json:"summary,omitempty"`
 	SkillName           string            `json:"skill_name,omitempty"`
+	CreatedAt           time.Time         `json:"created_at,omitempty"`
 	LastUpdated         time.Time         `json:"last_updated"`
 	ActiveNode          string            `json:"active_node"`
 	RoleCache           map[string]string `json:"role_cache"`

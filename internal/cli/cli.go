@@ -317,6 +317,35 @@ func (c *CLI) pulseLoop() {
 	}
 }
 
+func timeAgo(t time.Time) string {
+	if t.IsZero() {
+		return "—"
+	}
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		m := int(d.Minutes())
+		if m == 1 {
+			return "1m ago"
+		}
+		return fmt.Sprintf("%dm ago", m)
+	case d < 24*time.Hour:
+		h := int(d.Hours())
+		if h == 1 {
+			return "1h ago"
+		}
+		return fmt.Sprintf("%dh ago", h)
+	default:
+		days := int(d.Hours() / 24)
+		if days == 1 {
+			return "1d ago"
+		}
+		return fmt.Sprintf("%dd ago", days)
+	}
+}
+
 func (c *CLI) selectSession() (*models.Session, error) {
 	fd := int(syscall.Stdin)
 	oldState, err := enableRawMode(fd)
@@ -326,7 +355,7 @@ func (c *CLI) selectSession() (*models.Session, error) {
 	defer restoreTerminal(fd, oldState)
 
 	page := 0
-	pageSize := 10
+	pageSize := 15
 	selectedIndex := 0
 
 	for {
@@ -344,30 +373,54 @@ func (c *CLI) selectSession() (*models.Session, error) {
 		sb.WriteString(escHideCursor)
 		defer c.write(escShowCursor)
 
-		totalPages := (total + pageSize - 1) / pageSize
-		fmt.Fprintf(&sb, "Select a session to resume (Page %d/%d):\n\n", page+1, totalPages)
+		sb.WriteString("\n  Select a session to resume:\n\n")
+
+		// Table header
+		fmt.Fprintf(&sb, "  %s%-5s %-10s %-12s %-12s %-10s %s%s\n",
+			escDim, "#", "Modified", "Created", "Client", "ID", "Summary", escReset)
+		fmt.Fprintf(&sb, "  %s%s%s\n", escDim, strings.Repeat("─", 86), escReset)
 
 		for i, s := range sessions {
+			num := page*pageSize + i + 1
 			cursor := "  "
+			numColor := escDim
 			if i == selectedIndex {
-				cursor = escBoldCyan + "› " + escReset
-			}
-			title := s.Title
-			if title == "" {
-				title = s.CWD
-			}
-			if len(title) > 60 {
-				title = "..." + title[len(title)-57:]
+				cursor = escBoldCyan + "❯ " + escReset
+				numColor = escBoldCyan
 			}
 
-			ts := s.LastUpdated.Format("2006-01-02 15:04")
-			sk := ""
-			if s.SkillName != "" {
-				sk = fmt.Sprintf("(%s)", s.SkillName)
+			modified := timeAgo(s.LastUpdated)
+			created := timeAgo(s.CreatedAt)
+
+			clientName := s.Client
+			if clientName == "" {
+				clientName = c.DefaultClient
 			}
-			fmt.Fprintf(&sb, "%s%-60s %s [%s] %s\n", cursor, title, ts, s.ID[:8], sk)
+
+			shortID := s.ID[:8]
+
+			summary := s.Summary
+			if summary == "" && s.Title != "" {
+				summary = s.Title
+			}
+			if summary == "" {
+				summary = escDim + "(no summary)" + escReset
+			}
+			if len(summary) > 40 {
+				summary = summary[:37] + "..."
+			}
+
+			fmt.Fprintf(&sb, "%s%s%-3d%s  %-10s %-12s %-12s %-10s %s\n",
+				cursor, numColor, num, escReset,
+				modified, created, clientName, shortID, summary)
 		}
-		fmt.Fprintf(&sb, "\n  %sUse ↑/↓ to navigate, ←/→ for pages, Enter to select, q to quit.%s\n", escDim, escReset)
+
+		totalPages := (total + pageSize - 1) / pageSize
+		if totalPages > 1 {
+			fmt.Fprintf(&sb, "\n  %sPage %d/%d%s\n", escDim, page+1, totalPages, escReset)
+		}
+
+		fmt.Fprintf(&sb, "\n  %s↑↓ navigate · Enter select · ←→ pages · Esc cancel%s\n", escDim, escReset)
 		c.write(sb.String())
 
 		reader := bufio.NewReader(c.In)
@@ -409,6 +462,8 @@ func (c *CLI) selectSession() (*models.Session, error) {
 						}
 					}
 				}
+			} else {
+				return nil, fmt.Errorf("aborted")
 			}
 		}
 	}
@@ -420,11 +475,13 @@ func (c *CLI) initializeSession(resume bool) (*models.Session, error) {
 	}
 
 	cwd, _ := os.Getwd()
+	now := time.Now()
 	sess := &models.Session{
 		ID:           uuid.New().String(),
 		Client:       c.DefaultClient,
 		CWD:          cwd,
-		LastUpdated:  time.Now(),
+		CreatedAt:    now,
+		LastUpdated:  now,
 		RoleCache:    make(map[string]string),
 		ApprovalMode: models.ApprovalModePlan,
 	}

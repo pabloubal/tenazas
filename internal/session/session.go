@@ -36,6 +36,7 @@ func (sm *Manager) Create(cwd, title string) (*models.Session, error) {
 		ID:           uuid.New().String(),
 		CWD:          cwd,
 		Title:        title,
+		CreatedAt:    time.Now(),
 		LastUpdated:  time.Now(),
 		RoleCache:    make(map[string]string),
 		ApprovalMode: models.ApprovalModePlan,

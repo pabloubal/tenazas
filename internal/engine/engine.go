@@ -444,6 +444,16 @@ func (e *Engine) resumeAndRun(sess *models.Session, f func()) {
 }
 
 func (e *Engine) executePromptInternal(sess *models.Session, prompt string) {
+	// Auto-set summary from first user prompt
+	if sess.Summary == "" && prompt != "" {
+		summary := prompt
+		if len(summary) > 80 {
+			summary = summary[:77] + "..."
+		}
+		sess.Summary = summary
+		e.Sm.Save(sess)
+	}
+
 	e.log(sess, events.AuditLLMPrompt, "user", prompt)
 
 	ctx, cancel := context.WithCancel(context.Background())
