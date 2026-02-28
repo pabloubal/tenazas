@@ -52,6 +52,7 @@ type CLI struct {
 	lastRenderLines  int // tracks how many terminal rows the last input render occupied
 	promptLines      int // current number of wrapped prompt lines (for footer positioning)
 	lastEscTime      time.Time
+	isStreaming       bool // true while engine is producing output; keeps cursor in scroll region
 }
 
 func (c *CLI) refreshSkillCount() {
@@ -171,6 +172,34 @@ func (c *CLI) writeAtomic(sb *strings.Builder, fn func(*strings.Builder)) {
 	if c.Out != nil {
 		c.writeLocked(sb.String())
 	}
+}
+
+// writeInScrollRegion writes content into the scroll region.
+// During streaming the cursor is already there, so a plain write suffices.
+// Otherwise it saves the cursor, jumps to the scroll-region bottom,
+// writes, and restores.
+func (c *CLI) writeInScrollRegion(content string) {
+	c.mu.Lock()
+	inRaw := c.inRawMode
+	streaming := c.isStreaming
+	c.mu.Unlock()
+	if !inRaw {
+		c.write(content)
+		return
+	}
+	if streaming {
+		c.write(content)
+		return
+	}
+	rows, _ := c.getTermSize()
+	scrollBottom := rows - 5
+	if c.IsImmersive {
+		scrollBottom = rows - DrawerHeight - 6
+	}
+	if scrollBottom < 1 {
+		scrollBottom = 1
+	}
+	c.write(escSaveCursor + fmt.Sprintf(escMoveTo, scrollBottom) + content + escRestoreCursor)
 }
 
 func (c *CLI) drawBrandingAtomic(sb *strings.Builder) {
@@ -424,9 +453,26 @@ func (c *CLI) listenEvents(sessionID string) {
 			if audit.Type == events.AuditLLMPrompt {
 				c.mu.Lock()
 				c.lastThought = ""
+				c.isStreaming = false
 				c.mu.Unlock()
 				c.setThinking(true)
 			} else if audit.Type == events.AuditLLMChunk || audit.Type == events.AuditLLMThought {
+				c.mu.Lock()
+				wasStreaming := c.isStreaming
+				c.isStreaming = true
+				c.mu.Unlock()
+				if !wasStreaming {
+					// Move cursor into scroll region before first chunk
+					rows, _ := c.getTermSize()
+					scrollEnd := rows - 5
+					if c.IsImmersive {
+						scrollEnd = rows - DrawerHeight - 6
+					}
+					if scrollEnd < 1 {
+						scrollEnd = 1
+					}
+					c.write(fmt.Sprintf(escMoveTo, scrollEnd))
+				}
 				c.setThinking(false)
 			}
 
@@ -439,15 +485,21 @@ func (c *CLI) listenEvents(sessionID string) {
 			}
 
 			if audit.Type == events.AuditLLMChunk {
-				c.write(audit.Content)
+				c.writeInScrollRegion(audit.Content)
 				continue
 			}
 
 			if audit.Type == events.AuditLLMResponse {
+				c.mu.Lock()
+				c.isStreaming = false
+				c.mu.Unlock()
 				continue
 			}
 
 			if audit.Type == events.AuditCmdResult || audit.Type == events.AuditStatus || audit.Type == events.AuditInfo {
+				c.mu.Lock()
+				c.isStreaming = false
+				c.mu.Unlock()
 				formatted := f.Format(audit)
 				c.addThought(formatted)
 				c.mu.Lock()
@@ -458,9 +510,9 @@ func (c *CLI) listenEvents(sessionID string) {
 				}
 			}
 
-			c.write(fmt.Sprintf("\n%s%s\n", Margin, f.Format(audit)))
+			c.writeInScrollRegion(fmt.Sprintf("\n%s%s\n", Margin, f.Format(audit)))
 			if audit.Type == events.AuditIntervention {
-				c.write(fmt.Sprintf("\n%sType `/intervene <retry|proceed_to_fail|abort>`\n", Margin) + Margin + PromptNormal)
+				c.writeInScrollRegion(fmt.Sprintf("\n%sType `/intervene <retry|proceed_to_fail|abort>`\n", Margin))
 			}
 		}
 	}
@@ -622,6 +674,12 @@ func (c *CLI) updateCompletionsLocked() {
 }
 
 func (c *CLI) renderLineAtomic(sb *strings.Builder) {
+	// While streaming, save/restore so we don't displace the scroll-region cursor
+	if c.isStreaming {
+		sb.WriteString(escSaveCursor)
+		defer sb.WriteString(escRestoreCursor)
+	}
+
 	rows, cols := c.getTermSize()
 	promptRow := c.promptRow(rows)
 
@@ -835,6 +893,8 @@ func (c *CLI) replRaw(sess *models.Session) error {
 			}
 			c.write(fmt.Sprintf(escMoveTo, scrollEnd) + "\n")
 			if line != "" {
+				// Echo user prompt in scroll region and save content cursor
+				c.write(Margin + escBoldCyan + "› " + escReset + line + "\n")
 				c.handleCommand(sess, line)
 			}
 		case '\t':
