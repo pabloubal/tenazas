@@ -38,6 +38,7 @@ type CLI struct {
 	Engine        *engine.Engine
 	DefaultClient    string
 	DefaultModelTier string
+	ClientModels     map[string]map[string]string // clientName → tier → model name
 	In            io.Reader
 	Out           io.Writer
 	sess          *models.Session
@@ -97,13 +98,14 @@ func (c *CLI) refreshGitBranch() {
 	c.mu.Unlock()
 }
 
-func NewCLI(sm *session.Manager, reg *registry.Registry, eng *engine.Engine, defaultClient, defaultModelTier string) *CLI {
+func NewCLI(sm *session.Manager, reg *registry.Registry, eng *engine.Engine, defaultClient, defaultModelTier string, clientModels map[string]map[string]string) *CLI {
 	return &CLI{
 		Sm:               sm,
 		Reg:              reg,
 		Engine:           eng,
 		DefaultClient:    defaultClient,
 		DefaultModelTier: defaultModelTier,
+		ClientModels:     clientModels,
 		In:               os.Stdin,
 		Out:              os.Stdout,
 	}
@@ -280,7 +282,7 @@ func (c *CLI) Run(resume bool) error {
 		}
 	}()
 
-	c.write(Margin + "Commands: /run <skill>, /last <N>, /intervene <action>, /mode, /budget, /help\n")
+	c.write(Margin + "Commands: /run <skill>, /last <N>, /intervene <action>, /mode, /tier, /budget, /help\n")
 
 	if resume {
 		c.replayHistory(sess)
@@ -595,15 +597,15 @@ func (c *CLI) listenEvents(sessionID string) {
 			if audit.Type == events.AuditCmdResult || audit.Type == events.AuditStatus || audit.Type == events.AuditInfo {
 				c.mu.Lock()
 				c.isStreaming = false
-				c.mu.Unlock()
-				formatted := f.Format(audit)
-				c.addThought(formatted)
-				c.mu.Lock()
 				isImm := c.IsImmersive
 				c.mu.Unlock()
+				formatted := f.Format(audit)
 				if isImm {
+					c.addThought(formatted)
 					continue
 				}
+				c.writeInScrollRegion(fmt.Sprintf("\n%s%s\n", Margin, formatted))
+				continue
 			}
 
 			c.writeInScrollRegion(fmt.Sprintf("\n%s%s\n", Margin, f.Format(audit)))
@@ -630,7 +632,7 @@ func (c *CLI) getCompletions(line string) []string {
 		return []string{}
 	}
 
-	commands := []string{"/run", "/last", "/intervene", "/skills", "/mode", "/budget", "/help"}
+	commands := []string{"/run", "/last", "/intervene", "/skills", "/mode", "/tier", "/budget", "/help"}
 
 	if strings.HasPrefix(line, "/run ") {
 		prefix := strings.TrimPrefix(line, "/run ")
@@ -966,6 +968,8 @@ func (c *CLI) handleCommand(sess *models.Session, text string) {
 		c.handleSkills(parts[1:])
 	case "/mode":
 		c.handleMode(sess, parts[1:])
+	case "/tier":
+		c.handleTier(sess, parts[1:])
 	case "/budget":
 		c.handleBudget(sess, parts[1:])
 	case "/help":
@@ -1260,6 +1264,29 @@ func (c *CLI) handleMode(sess *models.Session, args []string) {
 	c.setApprovalMode(sess, args[0])
 }
 
+func (c *CLI) handleTier(sess *models.Session, args []string) {
+	if len(args) == 0 {
+		tier := sess.ModelTier
+		if tier == "" {
+			tier = "high (default)"
+		}
+		c.write(fmt.Sprintf("Tier: %s\nUsage: /tier <high|medium|low>\n", tier))
+		return
+	}
+	tier := strings.ToLower(args[0])
+	switch tier {
+	case "high", "medium", "low":
+		c.mu.Lock()
+		sess.ModelTier = tier
+		c.persistSession(sess)
+		c.drawFooterLocked(sess)
+		c.mu.Unlock()
+		c.write(fmt.Sprintf("Model tier set to %s.\n", tier))
+	default:
+		c.write("Invalid tier. Use: /tier <high|medium|low>\n")
+	}
+}
+
 func (c *CLI) handleBudget(sess *models.Session, args []string) {
 	if len(args) == 0 {
 		if sess.MaxBudgetUSD <= 0 {
@@ -1300,6 +1327,7 @@ func (c *CLI) handleHelp() {
 	fmt.Fprintln(&output, "  /intervene <action>  Resolve an intervention")
 	fmt.Fprintln(&output, "  /skills              List or toggle skills")
 	fmt.Fprintln(&output, "  /mode <mode>         Switch approval mode (plan, auto_edit, yolo)")
+	fmt.Fprintln(&output, "  /tier <tier>         Switch model tier (high, medium, low)")
 	fmt.Fprintln(&output, "  /budget <amount>     Set session budget cap (0 = unlimited)")
 	fmt.Fprintln(&output, "  /help                Show this help")
 	fmt.Fprintln(&output, "\nModes: plan, auto_edit, yolo")
@@ -1317,10 +1345,28 @@ func (c *CLI) drawFooterAtomic(sb *strings.Builder, sess *models.Session) {
 		clientName = c.DefaultClient
 	}
 
+	modelTier := sess.ModelTier
+	if modelTier == "" {
+		modelTier = c.DefaultModelTier
+	}
+	if modelTier == "" {
+		modelTier = "high"
+	}
+
+	// Resolve tier to concrete model name for display.
+	modelDisplay := modelTier
+	if c.ClientModels != nil {
+		if models, ok := c.ClientModels[clientName]; ok {
+			if name, ok := models[modelTier]; ok {
+				modelDisplay = name
+			}
+		}
+	}
+
 	d := FooterData{
 		Mode:         sess.ApprovalMode,
 		Yolo:         sess.Yolo,
-		ModelTier:    sess.ModelTier,
+		ModelTier:    modelDisplay,
 		MaxBudgetUSD: sess.MaxBudgetUSD,
 		SkillCount:   c.skillCount,
 		CWD:          sess.CWD,

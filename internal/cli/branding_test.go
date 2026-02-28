@@ -29,7 +29,7 @@ func TestVisualBranding(t *testing.T) {
 	eng := engine.NewEngine(sm, clients, "gemini", 5)
 
 	var out bytes.Buffer
-	cli := NewCLI(sm, reg, eng, "gemini")
+	cli := NewCLI(sm, reg, eng, "gemini", "", nil)
 	cli.Out = &out
 
 	// Initialize session so drawBranding has something to show

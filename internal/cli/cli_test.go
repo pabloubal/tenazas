@@ -49,7 +49,7 @@ func TestCLIBasic(t *testing.T) {
 	sm.AppendAudit(sess, events.AuditEntry{Type: events.AuditInfo, Content: "Test log entry"})
 
 	var out bytes.Buffer
-	cli := NewCLI(sm, reg, eng, "gemini")
+	cli := NewCLI(sm, reg, eng, "gemini", "", nil)
 	cli.Out = &out
 
 	// Directly test the command handling logic instead of the full REPL

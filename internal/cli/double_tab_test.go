@@ -20,7 +20,7 @@ func TestCLI_DoubleTabTrigger(t *testing.T) {
 
 	sm := session.NewManager(tmpDir)
 	var out bytes.Buffer
-	cli := NewCLI(sm, nil, nil, "gemini")
+	cli := NewCLI(sm, nil, nil, "gemini", "", nil)
 	cli.Out = &out
 	sess := &models.Session{
 		ID:           uuid.New().String(),
@@ -83,7 +83,7 @@ func TestCLI_DoubleTabComprehensive(t *testing.T) {
 
 	sm := session.NewManager(tmpDir)
 	var out bytes.Buffer
-	cli := NewCLI(sm, nil, nil, "gemini")
+	cli := NewCLI(sm, nil, nil, "gemini", "", nil)
 	cli.Out = &out
 	sess := &models.Session{
 		ID:           uuid.New().String(),

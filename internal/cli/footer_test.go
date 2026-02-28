@@ -191,7 +191,8 @@ func TestCLIInitializeSession(t *testing.T) {
 
 	sm := session.NewManager(tmpDir)
 	cli := &CLI{
-		Sm: sm,
+		Sm:               sm,
+		DefaultModelTier: "high",
 	}
 
 	sess, err := cli.initializeSession(false)
@@ -201,5 +202,42 @@ func TestCLIInitializeSession(t *testing.T) {
 
 	if sess.ApprovalMode != models.ApprovalModePlan {
 		t.Errorf("expected default ApprovalMode 'PLAN', got %s", sess.ApprovalMode)
+	}
+	if sess.ModelTier != "high" {
+		t.Errorf("expected default ModelTier 'high', got %s", sess.ModelTier)
+	}
+}
+
+func stripANSI(s string) string {
+	var out strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\x1b' {
+			for i < len(s) && s[i] != 'm' {
+				i++
+			}
+			continue
+		}
+		out.WriteByte(s[i])
+	}
+	return out.String()
+}
+
+func TestDrawFooterStepPrefix(t *testing.T) {
+	var out bytes.Buffer
+	cli := &CLI{Out: &out}
+	sess := &models.Session{
+		ID:           "step-test",
+		ApprovalMode: models.ApprovalModePlan,
+		SkillName:    "my-skill",
+		ActiveNode:   "validate",
+	}
+	cli.currentTask = "Running tests"
+	cli.drawFooter(sess)
+
+	// Strip ANSI escape sequences for matching (shimmer wraps each char in color codes)
+	got := out.String()
+	plain := stripANSI(got)
+	if !strings.Contains(plain, "Step validate: Running tests") {
+		t.Errorf("expected step prefix in shimmer, plain text: %q", plain)
 	}
 }

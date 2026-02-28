@@ -78,7 +78,14 @@ func main() {
 
 	handleSignals()
 
-	c := cli.NewCLI(sm, reg, eng, cfg.DefaultClient, cfg.DefaultModelTier)
+	clientModels := make(map[string]map[string]string)
+	for name, cc := range cfg.Clients {
+		if len(cc.Models) > 0 {
+			clientModels[name] = cc.Models
+		}
+	}
+
+	c := cli.NewCLI(sm, reg, eng, cfg.DefaultClient, cfg.DefaultModelTier, clientModels)
 	if err := c.Run(*resume); err != nil {
 		fmt.Printf("CLI Error: %v\n", err)
 	}

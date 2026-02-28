@@ -48,7 +48,7 @@ func TestThinkingStateTransition(t *testing.T) {
 	clients := map[string]client.Client{"gemini": c}
 	reg, _ := registry.NewRegistry(tmpDir)
 	eng := engine.NewEngine(sm, clients, "gemini", 5)
-	cli := NewCLI(sm, reg, eng, "gemini")
+	cli := NewCLI(sm, reg, eng, "gemini", "", nil)
 
 	sessionID := uuid.New().String()
 	go cli.listenEvents(sessionID)
