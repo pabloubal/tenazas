@@ -1193,7 +1193,7 @@ func (c *CLI) drawFooterAtomic(sb *strings.Builder, sess *models.Session) {
 	// Footer line 2 (keybindings/skills) at rows (fixed)
 	fmt.Fprintf(sb, escMoveTo, rows)
 	sb.WriteString(escClearLine)
-	sb.WriteString(escDim)
+	sb.WriteString(color)
 	fmt.Fprintf(sb, "%-*s", cols, line2)
 	sb.WriteString(escReset)
 	sb.WriteString(escRestoreCursor)
