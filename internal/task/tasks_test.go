@@ -16,7 +16,7 @@ func TestReadWriteTask(t *testing.T) {
 	task := &Task{
 		ID:        "TSK-000001",
 		Title:     "Test Task",
-		Status:    "todo",
+		Status:    StatusTodo,
 		CreatedAt: time.Now().Truncate(time.Second),
 		Blocks:    []string{"TSK-000002"},
 		BlockedBy: []string{"TSK-000000"},
@@ -82,10 +82,10 @@ func TestGetNextTaskID(t *testing.T) {
 
 func TestSelectNextTask(t *testing.T) {
 	tasks := []*Task{
-		{ID: "TSK-000001", Status: "done"},
-		{ID: "TSK-000002", Status: "todo", BlockedBy: []string{"TSK-000001"}},
-		{ID: "TSK-000003", Status: "todo", BlockedBy: []string{"TSK-000002"}},
-		{ID: "TSK-000004", Status: "blocked", BlockedBy: []string{"TSK-999999"}}, // Unresolvable
+		{ID: "TSK-000001", Status: StatusDone},
+		{ID: "TSK-000002", Status: StatusTodo, BlockedBy: []string{"TSK-000001"}},
+		{ID: "TSK-000003", Status: StatusTodo, BlockedBy: []string{"TSK-000002"}},
+		{ID: "TSK-000004", Status: StatusBlocked, BlockedBy: []string{"TSK-999999"}}, // Unresolvable
 	}
 
 	next := SelectNextTask(tasks)
@@ -94,7 +94,7 @@ func TestSelectNextTask(t *testing.T) {
 	}
 
 	// Now mark TSK-000002 as done
-	tasks[1].Status = "done"
+	tasks[1].Status = StatusDone
 	next = SelectNextTask(tasks)
 	if next == nil || next.ID != "TSK-000003" {
 		t.Errorf("Expected TSK-000003 to be selected, got %v", next)
@@ -132,8 +132,8 @@ func TestCheckAndArchive(t *testing.T) {
 	os.MkdirAll(logsDir, 0755)
 
 	// Create some tasks
-	task1 := &Task{ID: "TSK-000001", Status: "done"}
-	task2 := &Task{ID: "TSK-000002", Status: "done"}
+	task1 := &Task{ID: "TSK-000001", Status: StatusDone}
+	task2 := &Task{ID: "TSK-000002", Status: StatusDone}
 
 	WriteTask(filepath.Join(tasksDir, "TSK-000001.md"), task1)
 	WriteTask(filepath.Join(tasksDir, "TSK-000002.md"), task2)

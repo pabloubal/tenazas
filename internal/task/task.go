@@ -13,34 +13,48 @@ import (
 	"time"
 )
 
+// Task status constants.
+const (
+	StatusTodo       = "todo"
+	StatusInProgress = "in-progress"
+	StatusDone       = "done"
+	StatusBlocked    = "blocked"
+)
+
 // Task represents a work item managed by the task system.
 type Task struct {
-	ID               string     `json:"id"`
-	Title            string     `json:"title"`
-	Status           string     `json:"status"`
-	FailureCount     int        `json:"failure_count"`
-	CreatedAt        time.Time  `json:"created_at"`
-	UpdatedAt        time.Time  `json:"updated_at"`
-	Blocks           []string   `json:"blocks,omitempty"`
-	BlockedBy        []string   `json:"blocked_by,omitempty"`
-	OwnerPID         int        `json:"owner_pid,omitempty"`
-	OwnerInstanceID  string     `json:"owner_instance_id,omitempty"`
-	OwnerSessionID   string     `json:"owner_session_id,omitempty"`
-	OwnerSessionRole string     `json:"owner_session_role,omitempty"`
-	StartedAt        *time.Time `json:"started_at,omitempty"`
-	CompletedAt      *time.Time `json:"completed_at,omitempty"`
-	Content          string     `json:"-"`
-	FilePath         string     `json:"-"`
+	ID              string     `json:"id"`
+	Title           string     `json:"title"`
+	Status          string     `json:"status"`
+	FailureCount    int        `json:"failure_count"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+	Blocks          []string   `json:"blocks,omitempty"`
+	BlockedBy       []string   `json:"blocked_by,omitempty"`
+	OwnerPID        int        `json:"owner_pid,omitempty"`
+	OwnerInstanceID string     `json:"owner_instance_id,omitempty"`
+	OwnerSessionID  string     `json:"owner_session_id,omitempty"`
+	StartedAt       *time.Time `json:"started_at,omitempty"`
+	CompletedAt     *time.Time `json:"completed_at,omitempty"`
+	Content         string     `json:"-"`
+	FilePath        string     `json:"-"`
+}
+
+// ClearOwnership resets all owner fields after a task is completed or blocked.
+func (t *Task) ClearOwnership() {
+	t.OwnerPID = 0
+	t.OwnerInstanceID = ""
+	t.OwnerSessionID = ""
 }
 
 // IsReady checks if a task is 'todo' and all its dependencies are 'done'.
 func (t *Task) IsReady(taskMap map[string]*Task) bool {
-	if t.Status != "todo" {
+	if t.Status != StatusTodo {
 		return false
 	}
 	for _, id := range t.BlockedBy {
 		blocker, ok := taskMap[id]
-		if !ok || blocker.Status != "done" {
+		if !ok || blocker.Status != StatusDone {
 			return false
 		}
 	}
@@ -55,7 +69,22 @@ func WriteTask(path string, task *Task) error {
 	}
 
 	data := fmt.Sprintf("---\n%s\n---\n\n%s", string(fm), task.Content)
-	return os.WriteFile(path, []byte(data), 0644)
+
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+
+	tempFile := path + ".tmp"
+	if err := os.WriteFile(tempFile, []byte(data), 0644); err != nil {
+		return err
+	}
+
+	if err := os.Rename(tempFile, path); err != nil {
+		os.Remove(tempFile)
+		return err
+	}
+	return nil
 }
 
 func ReadTask(path string) (*Task, error) {
@@ -235,7 +264,7 @@ func CheckAndArchive(tasksDir string) (bool, error) {
 	}
 
 	for _, t := range tasks {
-		if t.Status != "done" {
+		if t.Status != StatusDone {
 			return false, nil
 		}
 	}

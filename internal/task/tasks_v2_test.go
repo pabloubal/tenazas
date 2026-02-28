@@ -20,7 +20,7 @@ func TestTaskFailureCountPersistence(t *testing.T) {
 	task := &Task{
 		ID:           "TSK-000001",
 		Title:        "Test Task",
-		Status:       "todo",
+		Status:       StatusTodo,
 		FailureCount: 5,
 		CreatedAt:    time.Now(),
 		Content:      "Test Content",
@@ -64,7 +64,7 @@ func TestWorkNextStrictness(t *testing.T) {
 
 	// Verify that the second task is STILL 'todo'
 	updatedTodo, _ := ReadTask(filepath.Join(tasksDir, "TSK-000002.md"))
-	if updatedTodo.Status != "todo" {
+	if updatedTodo.Status != StatusTodo {
 		t.Errorf("Expected second task to remain 'todo' because another task is in-progress, got %s", updatedTodo.Status)
 	}
 }

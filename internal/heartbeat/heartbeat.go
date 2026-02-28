@@ -108,6 +108,13 @@ func (h *Runner) Trigger(hb models.Heartbeat) {
 			return
 		}
 		h.log(fmt.Sprintf("Heartbeat %s: Resuming task %s", hb.Name, activeTask.ID))
+		activeTask.OwnerPID = os.Getpid()
+		activeTask.OwnerInstanceID = "heartbeat-" + hb.Name
+		if activeTask.StartedAt == nil {
+			now := time.Now().Truncate(time.Second)
+			activeTask.StartedAt = &now
+		}
+		task.WriteTask(activeTask.FilePath, activeTask)
 	}
 
 	for _, skillName := range hb.Skills {
@@ -125,7 +132,7 @@ func (h *Runner) Trigger(hb models.Heartbeat) {
 
 func (h *Runner) findInProgressTask(tasks []*task.Task) *task.Task {
 	for _, t := range tasks {
-		if t.Status == "in-progress" {
+		if t.Status == task.StatusInProgress {
 			return t
 		}
 	}
@@ -133,7 +140,8 @@ func (h *Runner) findInProgressTask(tasks []*task.Task) *task.Task {
 }
 
 func (h *Runner) blockTask(hbName string, t *task.Task) {
-	t.Status = "blocked"
+	t.Status = task.StatusBlocked
+	t.ClearOwnership()
 	task.WriteTask(t.FilePath, t)
 	msg := fmt.Sprintf("🚨 Task %s blocked after 3 failures in heartbeat %s", t.ID, hbName)
 	h.log(fmt.Sprintf("Heartbeat %s: %s", hbName, msg))
