@@ -260,12 +260,14 @@ func (e *Engine) callLLM(skill *models.SkillGraph, state *models.StateDef, sess 
 		budget = skill.MaxBudgetUSD
 	}
 
+	yolo := sess.Yolo || strings.EqualFold(approvalMode, models.ApprovalModeYolo)
+
 	opts := client.RunOptions{
 		NativeSID:    roleID,
 		Prompt:       prompt,
 		CWD:          sess.CWD,
 		ApprovalMode: approvalMode,
-		Yolo:         sess.Yolo,
+		Yolo:         yolo,
 		ModelTier:    modelTier,
 		MaxBudgetUSD: budget,
 		OnThought: func(t string) { e.log(sess, events.AuditLLMThought, state.SessionRole, t) },
@@ -281,7 +283,7 @@ func (e *Engine) callLLM(skill *models.SkillGraph, state *models.StateDef, sess 
 			e.log(sess, events.AuditCmdResult, state.SessionRole, msg)
 		},
 	}
-	if !sess.Yolo && e.OnPermission != nil {
+	if !yolo && e.OnPermission != nil {
 		opts.OnPermission = e.OnPermission
 	}
 	if v, ok := e.sessionCtxs.Load(sess.ID); ok {

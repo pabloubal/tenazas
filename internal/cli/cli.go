@@ -211,6 +211,28 @@ func (c *CLI) writeInScrollRegion(content string) {
 	c.write(escSaveCursor + fmt.Sprintf(escMoveTo, scrollBottom) + content + escRestoreCursor)
 }
 
+// renderIntent redraws the shimmer intent line at the bottom of the scroll region.
+func (c *CLI) renderIntent() {
+	c.mu.Lock()
+	task := c.currentTask
+	frame := c.pulseFrame
+	c.mu.Unlock()
+	if task == "" {
+		return
+	}
+
+	taskText := "• " + task
+	_, cols := c.getTermSize()
+	maxLen := cols - MarginWidth - 2
+	taskRunes := []rune(taskText)
+	if len(taskRunes) > maxLen {
+		taskText = string(taskRunes[:maxLen-3]) + "..."
+	}
+	shimmer := shimmerText(taskText, frame)
+	// Overwrite the current line in the scroll region with the shimmer
+	c.writeInScrollRegion(escCR + escClearLine + Margin + shimmer)
+}
+
 func (c *CLI) drawBrandingAtomic(sb *strings.Builder) {
 	lines := strings.Split(strings.Trim(AsciiBanner, "\n"), "\n")
 	colors := []string{
@@ -308,14 +330,19 @@ func (c *CLI) pulseLoop() {
 	ticker := time.NewTicker(120 * time.Millisecond)
 	for range ticker.C {
 		c.mu.Lock()
-		active := c.isThinking || c.currentTask != ""
-		if !active {
+		hasTask := c.currentTask != ""
+		thinking := c.isThinking
+		if !thinking && !hasTask {
 			c.mu.Unlock()
 			continue
 		}
 		c.pulseFrame++
 		c.mu.Unlock()
-		c.renderLine()
+		if hasTask {
+			c.renderIntent()
+		} else {
+			c.renderLine()
+		}
 	}
 }
 
@@ -561,9 +588,14 @@ func (c *CLI) listenEvents(sessionID string) {
 
 			if audit.Type == events.AuditIntent {
 				c.mu.Lock()
+				prev := c.currentTask
 				c.currentTask = audit.Content
 				c.mu.Unlock()
-				c.renderLine()
+				if prev == "" {
+					// First intent — emit a newline to anchor the shimmer line
+					c.writeInScrollRegion("\n")
+				}
+				c.renderIntent()
 				continue
 			}
 
@@ -805,26 +837,6 @@ func (c *CLI) renderLineAtomic(sb *strings.Builder) {
 			fmt.Fprintf(sb, escMoveTo, r)
 			sb.WriteString(escClearLine)
 		}
-	}
-
-	if c.currentTask != "" {
-		// Show shimmer intent line instead of normal prompt
-		taskText := "• " + c.currentTask
-		_, cols2 := c.getTermSize()
-		maxLen := cols2 - MarginWidth - 2
-		taskRunes := []rune(taskText)
-		if len(taskRunes) > maxLen {
-			taskText = string(taskRunes[:maxLen-3]) + "..."
-		}
-		shimmer := shimmerText(taskText, c.pulseFrame)
-		fmt.Fprintf(sb, escMoveTo, startRow)
-		sb.WriteString(escClearLine)
-		sb.WriteString(Margin)
-		sb.WriteString(shimmer)
-		sb.WriteString(escClearToEOL)
-		c.lastRenderLines = 1
-		c.promptLines = 1
-		return
 	}
 
 	if c.isThinking {
