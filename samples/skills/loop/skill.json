@@ -94,9 +94,20 @@
       "on_fail_route": "step_update_docs",
       "next": "step_7_pr"
     },
-    "step_7_pr": {
+    "step_7_commit": {
+      "type": "action_loop",
+      "session_role": "coder",
+      "instruction": "@commit.md",
+      "approval_mode": "yolo",
+      "verify_cmd": "git log -1 --since='1 minutes ago' | grep -q .",
+      "max_retries": 2,
+      "on_fail_prompt": "Verification failed: No new commit was detected, or the commit message was empty. Please review git status, stage the correct files (excluding boilerplate), and execute git commit.",
+      "on_fail_route": "step_7_commit",
+      "next": "step_8_pr"
+    },
+    "step_8_pr": {
       "type": "tool",
-      "command": "say 'All steps completed successfully! Please create a pull request with the changes.'",
+      "command": "say 'Code committed successfully! Ready for push/PR.'",
       "is_terminal": true,
       "next": "mark_done"
     },
