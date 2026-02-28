@@ -20,6 +20,7 @@ var knownClients = []struct {
 }{
 	{"gemini", "gemini"},
 	{"claude-code", "claude"},
+	{"copilot", "copilot"},
 }
 
 // defaultModels provides sensible model tier defaults per client.
@@ -33,6 +34,11 @@ var defaultModels = map[string]map[string]string{
 		"high":   "opus",
 		"medium": "sonnet",
 		"low":    "haiku",
+	},
+	"copilot": {
+		"high":   "claude-opus-4.6",
+		"medium": "gpt-5.3-codex",
+		"low":    "gpt-5.3-codex",
 	},
 }
 
@@ -107,24 +113,8 @@ func Run(storageDir string) error {
 		fmt.Println()
 	}
 
-	// --- Step 3: customize paths for other detected clients ---
+	// --- Step 3: configure model tiers ---
 	scanner := bufio.NewScanner(os.Stdin)
-	for _, dc := range available {
-		if _, ok := clients[dc.Name]; ok {
-			continue
-		}
-		fmt.Printf("  Custom path for %s? (Enter to keep %s): ", dc.Name, dc.Path)
-		if scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if line != "" {
-				clients[dc.Name] = config.ClientConfig{BinPath: line}
-			} else {
-				clients[dc.Name] = config.ClientConfig{BinPath: dc.Path}
-			}
-		}
-	}
-
-	// --- Step 4: configure model tiers ---
 	fmt.Println("  Model Tiers")
 	fmt.Println("  Tenazas uses generic tiers (high, medium, low) mapped to each client's models.")
 	fmt.Println()
