@@ -24,6 +24,8 @@ type RunOptions struct {
 	Yolo         bool    // shortcut: bypass all permissions
 	ModelTier    string  // "high", "medium", "low" — mapped per client
 	MaxBudgetUSD float64 // cost ceiling (0 = unlimited)
+	OnThought    func(string) // optional callback for chain-of-thought chunks (used by ACP clients)
+	OnToolEvent  func(name, status, detail string) // optional callback for tool execution events (used by ACP clients)
 }
 
 // Client is the strategy interface every coding-agent backend must implement.

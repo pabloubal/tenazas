@@ -14,10 +14,10 @@ import (
 func TestRegisteredClients(t *testing.T) {
 	names := RegisteredClients()
 	sort.Strings(names)
-	if len(names) != 2 {
-		t.Fatalf("expected 2 registered clients, got %d: %v", len(names), names)
+	if len(names) != 3 {
+		t.Fatalf("expected 3 registered clients, got %d: %v", len(names), names)
 	}
-	if names[0] != "claude-code" || names[1] != "gemini" {
+	if names[0] != "claude-code" || names[1] != "copilot" || names[2] != "gemini" {
 		t.Fatalf("unexpected client names: %v", names)
 	}
 }
