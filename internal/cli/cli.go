@@ -263,16 +263,9 @@ func (c *CLI) Run(resume bool) error {
 	signal.Notify(sigChan, syscall.SIGWINCH)
 	go func() {
 		for range sigChan {
-			var sb strings.Builder
-			c.writeAtomic(&sb, func(sb *strings.Builder) {
-				sb.WriteString(escHideCursor)
-				sb.WriteString(escSaveCursor)
-				c.setupTerminalAtomic(sb)
-				c.drawDrawerAtomic(sb)
-				sb.WriteString(escRestoreCursor)
-				c.renderLineAtomic(sb)
-				sb.WriteString(escShowCursor)
-			})
+			c.mu.Lock()
+			c.redrawScreenLocked()
+			c.mu.Unlock()
 		}
 	}()
 
