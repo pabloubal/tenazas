@@ -1,12 +1,21 @@
 {
   "skill_name": "taskmaster",
-  "initial_state": "validate_prd",
+  "initial_state": "cleanup",
   "states": {
-    "validate_prd": {
+    "cleanup": {
       "type": "tool",
-      "command": "test -f docs/prd.md",
-      "next": "analyze_prd",
-      "on_fail_prompt": "This project is missing the required PRD document (docs/prd.md). Please create it so I can break down the tasks."
+      "command": "rm -rf docs/prd.md && mkdir -p docs",
+      "next": "picker",
+      "on_fail_prompt": "Failed to clean up the in-progress folder. Please check that I have permission to delete and create files in the docs/in-progress directory."
+    },
+    "picker": {
+      "type": "action_loop",
+      "session_role": "setup_assistant",
+      "approval_mode": "yolo",
+      "instruction": "@prd-picker.md",
+      "verify_cmd": "test -f docs/prd.md",
+      "on_fail_prompt": "This project is missing the required PRD document (docs/prd.md). Please create it so I can break down the tasks.",
+      "next": "analyze_prd"
     },
     "analyze_prd": {
       "type": "action_loop",
@@ -15,12 +24,6 @@
       "instruction": "@prompt.md",
       "verify_cmd": "tenazas work status",
       "next": "done"
-    },
-    "move_prd": {
-      "type": "tool",
-      "command": "mkdir -p docs/in-progress && mv docs/prd.md docs/in-progress/prd.md",
-      "next": "done",
-      "on_fail_prompt": "Can't move the PRD to the in-progress folder. Please check that the file exists and is not open in another program."
     },
     "done": { "type": "end" }
   }
