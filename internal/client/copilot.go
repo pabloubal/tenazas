@@ -94,7 +94,7 @@ func (c *CopilotClient) Run(opts RunOptions, onChunk func(string), onSessionID f
 	}
 
 	// Set model if specified.
-	if model := c.resolveModel(opts.ModelTier); model != "" {
+	if model := c.ResolveModel(opts.ModelTier); model != "" {
 		c.call("session/set_model", map[string]any{
 			"sessionId": sessionID,
 			"modelId":   model,
@@ -445,7 +445,7 @@ func (c *CopilotClient) mapMode(opts RunOptions) string {
 	}
 }
 
-func (c *CopilotClient) resolveModel(tier string) string {
+func (c *CopilotClient) ResolveModel(tier string) string {
 	if tier == "" || len(c.models) == 0 {
 		return ""
 	}

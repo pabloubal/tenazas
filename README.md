@@ -129,6 +129,12 @@ Tenazas includes an autonomous engine that can execute complex "Skills" defined 
 - `/mode <plan|auto_edit|yolo>`: Set the approval mode for the current session.
 - `/budget [amount]`: Show or set the session budget cap (e.g. `/budget 5.00`, `/budget 0` for unlimited).
 - `/intervene <retry|proceed_to_fail|abort>`: Manually resolve a state that requires human intervention.
+- `/tasks`: List all tasks for the current session's workspace.
+- `/task show <id>`: Show full detail for a task.
+- `/task next`: Pick up the next ready task.
+- `/task complete`: Mark the active task as done.
+- `/task add <title> <desc>`: Create a new task.
+- `/task unblock <id>`: Unblock a blocked task.
 - `/last [n]`: View recent audit log entries.
 - `/help`: Show a list of all available commands.
 

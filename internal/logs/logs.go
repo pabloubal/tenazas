@@ -17,6 +17,7 @@ import (
 type Filter struct {
 	Type      string // filter by audit type (e.g., "llm_response")
 	Role      string // filter by conversation role (user/assistant/system)
+	Step      string // filter by skill step tag (e.g., "loop.step_8_pr")
 	Since     time.Time
 	Until     time.Time
 	Search    string // text search in content
@@ -82,6 +83,9 @@ func matchesFilter(entry events.AuditEntry, f *Filter) bool {
 		return false
 	}
 	if f.Role != "" && entry.Role != f.Role {
+		return false
+	}
+	if f.Step != "" && entry.Step != f.Step {
 		return false
 	}
 	if !f.Since.IsZero() && entry.Timestamp.Before(f.Since) {
@@ -191,9 +195,21 @@ func FormatEntry(e events.AuditEntry) string {
 	roleBadge := roleBadgeFor(e.Role)
 	typeBadge := typeBadgeFor(e.Type)
 
+	stepLabel := ""
+	if e.Step != "" {
+		stepLabel = fmt.Sprintf(" \x1b[36m<%s>\x1b[0m", e.Step)
+	}
+
 	sourceLabel := ""
 	if e.Source != "" && e.Source != "engine" {
 		sourceLabel = fmt.Sprintf(" \x1b[2m[%s]\x1b[0m", e.Source)
+	}
+
+	modelLabel := ""
+	if e.Model != "" {
+		modelLabel = fmt.Sprintf(" \x1b[35m(%s)\x1b[0m", e.Model)
+	} else if e.ModelTier != "" {
+		modelLabel = fmt.Sprintf(" \x1b[35m(tier:%s)\x1b[0m", e.ModelTier)
 	}
 
 	content := e.Content
@@ -206,8 +222,8 @@ func FormatEntry(e events.AuditEntry) string {
 		exitInfo = fmt.Sprintf(" \x1b[31m(exit %d)\x1b[0m", e.ExitCode)
 	}
 
-	return fmt.Sprintf("\x1b[2m%s\x1b[0m %s%s%s%s %s",
-		ts, roleBadge, typeBadge, sourceLabel, exitInfo, content)
+	return fmt.Sprintf("\x1b[2m%s\x1b[0m %s%s%s%s%s%s %s",
+		ts, roleBadge, typeBadge, stepLabel, modelLabel, sourceLabel, exitInfo, content)
 }
 
 func roleBadgeFor(role string) string {

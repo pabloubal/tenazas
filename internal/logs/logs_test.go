@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -189,6 +190,40 @@ func TestFormatEntry_WithRole(t *testing.T) {
 	output := FormatEntry(entry)
 	if output == "" {
 		t.Error("expected non-empty formatted output")
+	}
+}
+
+func TestFilter_ByStep(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.audit.jsonl")
+	writeTestEntries(t, path, []events.AuditEntry{
+		{Type: events.AuditLLMPrompt, Step: "loop.step_1_plan", Content: "plan step"},
+		{Type: events.AuditLLMResponse, Step: "loop.step_1_plan", Content: "plan response"},
+		{Type: events.AuditLLMPrompt, Step: "loop.step_2_code", Content: "code step"},
+		{Type: events.AuditStatus, Content: "no step tag"},
+	})
+
+	entries, err := ReadAuditFile(path, &Filter{Step: "loop.step_1_plan"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Errorf("step filter failed: expected 2 entries, got %d", len(entries))
+	}
+}
+
+func TestFormatEntry_WithStep(t *testing.T) {
+	entry := events.AuditEntry{
+		Timestamp: time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC),
+		Type:      events.AuditLLMPrompt,
+		Source:    "architect",
+		Role:      events.RoleUser,
+		Step:      "loop.step_8_pr",
+		Content:   "Create PR",
+	}
+	output := FormatEntry(entry)
+	if !strings.Contains(output, "loop.step_8_pr") {
+		t.Errorf("expected step tag in output, got: %s", output)
 	}
 }
 

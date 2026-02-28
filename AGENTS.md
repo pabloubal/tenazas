@@ -14,7 +14,7 @@ Tenazas is a high-performance, zero-dependency Go gateway for coding-agent CLIs 
 cmd/tenazas/main.go              ← Thin entrypoint, wires all packages
 internal/
   config/config.go               ← Config struct, Load(), env var overrides
-  events/events.go               ← EventBus, AuditEntry, TaskStatusPayload, constants
+  events/events.go               ← EventBus, AuditEntry (with Step tag), TaskStatusPayload, constants
   models/models.go               ← Session, SkillGraph, StateDef, Heartbeat, EngineInterface
   storage/storage.go             ← Atomic JSON I/O, Slugify, path resolution
   session/session.go             ← Session CRUD, audit log, skill registry, listing
@@ -26,6 +26,9 @@ internal/
   engine/
     engine.go                    ← Skill execution loop, intervention, prompt building
     thought_parser.go            ← Chain-of-thought stream parser
+  logs/
+    logs.go                      ← Audit log reader, step-aware filtering, formatting
+    command.go                   ← `tenazas logs` CLI subcommand
   skill/skill.go                 ← Skill loading and listing
   task/
     task.go                      ← Task model, CRUD, cycle detection, archival
@@ -110,6 +113,7 @@ Layer 1 (foundation deps):   formatter → events
                               task → storage
                               onboard → config
 Layer 2 (mid-tier):          session → events, models, skill, storage
+                              logs → events, models, session
 Layer 3 (orchestration):     engine → events, client, models, session
 Layer 4 (top-tier):          heartbeat → engine, events, models, session, storage, task
                               telegram → events, formatter, models, registry, session
@@ -162,12 +166,13 @@ Provides the terminal interface.
 - **Banner**: Shows the active client name at startup (e.g., `[gemini]`, `[claude-code]`).
 - **Menu**: Interactive paginated list for session resumption.
 - **Immersive Mode**: Split-pane with thought drawer and footer bar. When a task is active, the footer displays a shimmer-animated intent indicator instead of the default keybindings. During skill execution, the footer prefixes the intent with the active step name (e.g., `Step validate: Running tests`).
+- **Task Commands**: `/tasks` lists all tasks for the session's CWD; `/task show|next|complete|add|unblock` manages individual tasks without leaving the REPL. Autocomplete supports `/task` subcommands.
 
 ### `internal/engine` (The Brain)
 Drives the skill execution loop using the `client.Client` interface for agent communication.
 - **RunOptions Construction**: Builds `RunOptions` per call with cascading overrides — model tier: `StateDef.ModelTier` > `Session.ModelTier`; budget: `SkillGraph.MaxBudgetUSD` > `Session.MaxBudgetUSD`.
 - **Prompt Construction**: `BuildPrompt()` assembles the final prompt from the state instruction and session context. On resume, the instruction is preserved alongside a `### SESSION CONTEXT:` header. For retry/feedback loops, the instruction is followed by a `### FEEDBACK FROM PREVIOUS ATTEMPT:` section containing prior output.
-- **Structured Audit Logging**: Command results are logged with their exit codes via `logCmd()`, enabling downstream consumers to distinguish success from failure programmatically.
+- **Structured Audit Logging**: Command results are logged with their exit codes via `logCmd()`, enabling downstream consumers to distinguish success from failure programmatically. All audit entries are tagged with a `Step` field (format `"skill_name.active_node"`) when executing inside a skill, enabling per-step log filtering via `stepTag()`.
 - **Intervention System**: Pause/retry/abort for failed tool calls.
 - **Thought Parser**: Extracts chain-of-thought from streaming responses.
 - **Max Loops**: Configurable safety limit on autonomous iterations.
@@ -182,7 +187,8 @@ Manages the filesystem-based task queue used by both the CLI and heartbeat.
 - **Dependency Management**: `AddDependency` and `RemoveDependency` manage bidirectional edges (`BlockedBy` / `Blocks`) with rollback-safe cycle detection via `HasCycle`. Self-dependencies are rejected.
 - **Metadata Fields**: Tasks support optional `Skill` (bind a skill for heartbeat execution) and `Labels` (free-form tags for categorization and filtering).
 - **Archival**: `CheckAndArchive` archives all tasks when every task is done. `ForceArchive` selectively archives only done tasks (with integrity checks against active dependents). Both use `archiveTaskFiles` to move task files and their per-task log files to `archive/{timestamp}/`.
-- **`work` Subcommand**: `HandleWorkCommand` dispatches `init`, `add`, `next`, `complete`, `status`, `list`, `show`, `edit`, `delete`, `dep`, `unblock`, `reset`, and `archive`. `init` runs `MigrateTasks` and prints a status summary. `next` sets ownership and `StartedAt`. `complete` sets `CompletedAt` and clears ownership. `list` renders a tabular view of all tasks. `show <id>` displays full detail for a single task with resolved dependency statuses. `edit <id>` modifies fields (title, status, priority, skill, labels) with validation. `delete <id>` removes a task after verifying no active dependents. `dep add|remove` manages dependencies bidirectionally with cycle detection. `unblock <id>` resets a blocked task to todo. `reset <id>` fully resets a task to its initial state. `archive` archives all tasks (or `--force` for done-only selective archival). Task IDs are normalized via `normalizeTaskID` (e.g., bare `1` → `TSK-000001`).
+- **Public API**: `NormalizeTaskID(input)` is exported for use by external packages (e.g., CLI REPL) to convert user input into canonical `TSK-XXXXXX` format.
+- **`work` Subcommand**: `HandleWorkCommand` dispatches `init`, `add`, `next`, `complete`, `status`, `list`, `show`, `edit`, `delete`, `dep`, `unblock`, `reset`, and `archive`. `init` runs `MigrateTasks` and prints a status summary. `next` sets ownership and `StartedAt`. `complete` sets `CompletedAt` and clears ownership. `list` renders a tabular view of all tasks. `show <id>` displays full detail for a single task with resolved dependency statuses. `edit <id>` modifies fields (title, status, priority, skill, labels) with validation. `delete <id>` removes a task after verifying no active dependents. `dep add|remove` manages dependencies bidirectionally with cycle detection. `unblock <id>` resets a blocked task to todo. `reset <id>` fully resets a task to its initial state. `archive` archives all tasks (or `--force` for done-only selective archival). Task IDs are normalized via `NormalizeTaskID` (e.g., bare `1` → `TSK-000001`).
 
 ### `internal/heartbeat` (Background Runner)
 Periodically scans for pending heartbeat files and runs skills automatically.

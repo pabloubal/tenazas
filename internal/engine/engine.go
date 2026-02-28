@@ -244,7 +244,6 @@ func (e *Engine) executeTool(state *models.StateDef, sess *models.Session) {
 
 func (e *Engine) callLLM(skill *models.SkillGraph, state *models.StateDef, sess *models.Session) (string, error) {
 	prompt := e.BuildPrompt(state, sess)
-	e.log(sess, events.AuditLLMPrompt, state.SessionRole, prompt, events.RoleUser)
 
 	roleID := sess.RoleCache[state.SessionRole]
 	approvalMode := state.ApprovalMode
@@ -255,6 +254,23 @@ func (e *Engine) callLLM(skill *models.SkillGraph, state *models.StateDef, sess 
 	if modelTier == "" {
 		modelTier = sess.ModelTier
 	}
+
+	// Resolve the concrete model name for logging.
+	c := e.resolveClient(sess)
+	modelName := ""
+	if c != nil {
+		modelName = c.ResolveModel(modelTier)
+	}
+
+	e.Sm.AppendAudit(sess, events.AuditEntry{
+		Type:      events.AuditLLMPrompt,
+		Source:    state.SessionRole,
+		Role:      events.RoleUser,
+		Step:      stepTag(sess),
+		ModelTier: modelTier,
+		Model:     modelName,
+		Content:   prompt,
+	})
 
 	// Skill-level budget overrides session-level.
 	budget := sess.MaxBudgetUSD
@@ -293,7 +309,6 @@ func (e *Engine) callLLM(skill *models.SkillGraph, state *models.StateDef, sess 
 	}
 
 	onChunk := e.OnChunk(sess, state)
-	c := e.resolveClient(sess)
 	resp, err := c.Run(opts, onChunk, e.onSID(sess, state))
 	onChunk("")
 	return resp, err
@@ -384,7 +399,7 @@ func (e *Engine) OnChunk(sess *models.Session, state *models.StateDef) func(stri
 	parser := &ThoughtParser{
 		OnThought: func(t string) { e.log(sess, events.AuditLLMThought, state.SessionRole, t, events.RoleAssistant) },
 		OnText: func(t string) {
-			e.Sm.AppendAudit(sess, events.AuditEntry{Type: events.AuditLLMChunk, Source: state.SessionRole, Role: events.RoleAssistant, Content: t})
+			e.Sm.AppendAudit(sess, events.AuditEntry{Type: events.AuditLLMChunk, Source: state.SessionRole, Role: events.RoleAssistant, Step: stepTag(sess), Content: t})
 		},
 	}
 	return parser.Parse
@@ -463,7 +478,21 @@ func (e *Engine) executePromptInternal(sess *models.Session, prompt string) {
 		e.Sm.Save(sess)
 	}
 
-	e.log(sess, events.AuditLLMPrompt, "user", prompt, events.RoleUser)
+	c := e.resolveClient(sess)
+	modelName := ""
+	if c != nil {
+		modelName = c.ResolveModel(sess.ModelTier)
+	}
+
+	e.Sm.AppendAudit(sess, events.AuditEntry{
+		Type:      events.AuditLLMPrompt,
+		Source:    "user",
+		Role:      events.RoleUser,
+		Step:      stepTag(sess),
+		ModelTier: sess.ModelTier,
+		Model:     modelName,
+		Content:   prompt,
+	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	e.cancelFns.Store(sess.ID, cancel)
@@ -500,7 +529,6 @@ func (e *Engine) executePromptInternal(sess *models.Session, prompt string) {
 	}
 
 	onChunk := e.OnChunk(sess, &models.StateDef{SessionRole: "default"})
-	c := e.resolveClient(sess)
 	resp, err := c.Run(opts, onChunk, func(newSID string) {
 		sess.RoleCache["default"] = newSID
 		e.Sm.Save(sess)
@@ -584,6 +612,7 @@ func (e *Engine) log(sess *models.Session, eventType, source, content, role stri
 		Type:    eventType,
 		Source:  source,
 		Role:    role,
+		Step:    stepTag(sess),
 		Content: content,
 	})
 }
@@ -593,9 +622,18 @@ func (e *Engine) logCmd(sess *models.Session, source, content string, exitCode i
 		Type:     events.AuditCmdResult,
 		Source:   source,
 		Role:     events.RoleSystem,
+		Step:     stepTag(sess),
 		Content:  content,
 		ExitCode: exitCode,
 	})
+}
+
+// stepTag returns "skill_name.active_node" when inside a skill, empty otherwise.
+func stepTag(sess *models.Session) string {
+	if sess.SkillName != "" && sess.ActiveNode != "" {
+		return sess.SkillName + "." + sess.ActiveNode
+	}
+	return ""
 }
 
 func (e *Engine) getInterventionChan(sessID string) chan string {

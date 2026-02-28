@@ -16,6 +16,7 @@ func HandleCommand(sm *session.Manager, args []string) {
 
 	typeFilter := fs.String("type", "", "Filter by audit type (llm_prompt, llm_response, cmd_result, status, etc.)")
 	roleFilter := fs.String("role", "", "Filter by conversation role (user, assistant, system)")
+	stepFilter := fs.String("step", "", "Filter by skill step tag (e.g., loop.step_8_pr)")
 	sinceStr := fs.String("since", "", "Show entries after this time (RFC3339 or HH:MM:SS)")
 	untilStr := fs.String("until", "", "Show entries before this time (RFC3339 or HH:MM:SS)")
 	search := fs.String("search", "", "Text search in log content")
@@ -29,6 +30,7 @@ func HandleCommand(sm *session.Manager, args []string) {
 	f := &Filter{
 		Type:      *typeFilter,
 		Role:      *roleFilter,
+		Step:      *stepFilter,
 		Search:    *search,
 		Heartbeat: *heartbeatName,
 	}

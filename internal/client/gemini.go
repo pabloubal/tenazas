@@ -117,13 +117,13 @@ func (g *GeminiClient) buildArgs(opts RunOptions) []string {
 	} else if opts.ApprovalMode != "" {
 		args = append(args, "--approval-mode", opts.ApprovalMode)
 	}
-	if model := g.resolveModel(opts.ModelTier); model != "" {
+	if model := g.ResolveModel(opts.ModelTier); model != "" {
 		args = append(args, "--model", model)
 	}
 	return args
 }
 
-func (g *GeminiClient) resolveModel(tier string) string {
+func (g *GeminiClient) ResolveModel(tier string) string {
 	if tier == "" || len(g.models) == 0 {
 		return ""
 	}

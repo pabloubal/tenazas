@@ -49,6 +49,9 @@ type AuditEntry struct {
 	Type      string    `json:"type"`
 	Source    string    `json:"source"`
 	Role      string    `json:"role,omitempty"`
+	Step      string    `json:"step,omitempty"`
+	ModelTier string    `json:"model_tier,omitempty"`
+	Model     string    `json:"model,omitempty"`
 	Content   string    `json:"content"`
 	ExitCode  int       `json:"exit_code,omitempty"`
 }

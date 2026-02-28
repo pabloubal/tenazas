@@ -317,13 +317,13 @@ echo '{"type": "result", "result": "no-yolo"}'
 func TestGeminiClient_SetModels(t *testing.T) {
 	g := &GeminiClient{}
 	g.SetModels(map[string]string{"high": "gemini-2.5-pro", "medium": "gemini-2.5-flash", "low": "gemini-2.0-flash-lite"})
-	if got := g.resolveModel("high"); got != "gemini-2.5-pro" {
+	if got := g.ResolveModel("high"); got != "gemini-2.5-pro" {
 		t.Fatalf("expected 'gemini-2.5-pro', got %q", got)
 	}
-	if got := g.resolveModel("low"); got != "gemini-2.0-flash-lite" {
+	if got := g.ResolveModel("low"); got != "gemini-2.0-flash-lite" {
 		t.Fatalf("expected 'gemini-2.0-flash-lite', got %q", got)
 	}
-	if got := g.resolveModel(""); got != "" {
+	if got := g.ResolveModel(""); got != "" {
 		t.Fatalf("expected empty for no tier, got %q", got)
 	}
 }
@@ -364,7 +364,7 @@ echo '{"type": "message", "content": "no-model"}'
 func TestClaudeCodeClient_SetModels(t *testing.T) {
 	c := &ClaudeCodeClient{}
 	c.SetModels(map[string]string{"high": "opus", "medium": "sonnet", "low": "haiku"})
-	if got := c.resolveModel("medium"); got != "sonnet" {
+	if got := c.ResolveModel("medium"); got != "sonnet" {
 		t.Fatalf("expected 'sonnet', got %q", got)
 	}
 }

@@ -174,7 +174,7 @@ func (c *ClaudeCodeClient) buildArgs(opts RunOptions) []string {
 			args = append(args, "--permission-mode", pm)
 		}
 	}
-	if model := c.resolveModel(opts.ModelTier); model != "" {
+	if model := c.ResolveModel(opts.ModelTier); model != "" {
 		args = append(args, "--model", model)
 	}
 	if opts.MaxBudgetUSD > 0 {
@@ -183,7 +183,7 @@ func (c *ClaudeCodeClient) buildArgs(opts RunOptions) []string {
 	return args
 }
 
-func (c *ClaudeCodeClient) resolveModel(tier string) string {
+func (c *ClaudeCodeClient) ResolveModel(tier string) string {
 	if tier == "" || len(c.models) == 0 {
 		return ""
 	}

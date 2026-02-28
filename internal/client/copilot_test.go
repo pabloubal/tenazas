@@ -122,7 +122,7 @@ func TestCopilotClient_ModelResolve(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		got := c.resolveModel(tc.tier)
+		got := c.ResolveModel(tc.tier)
 		if got != tc.want {
 			t.Errorf("resolveModel(%q) = %q, want %q", tc.tier, got, tc.want)
 		}

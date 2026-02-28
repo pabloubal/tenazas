@@ -63,6 +63,9 @@ type Client interface {
 
 	// SetModels configures the tier-to-model mapping for this client.
 	SetModels(models map[string]string)
+
+	// ResolveModel returns the concrete model name for a given tier (e.g. "high" → "gemini-2.5-pro").
+	ResolveModel(tier string) string
 }
 
 // registry maps client names to constructor functions.
