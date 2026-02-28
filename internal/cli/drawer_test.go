@@ -64,7 +64,7 @@ func TestCLI_DoubleTabToggle(t *testing.T) {
 
 func TestCLI_AddThought(t *testing.T) {
 	var out bytes.Buffer
-	cli := &CLI{Out: &out}
+	cli := &CLI{Out: &out, IsImmersive: true}
 
 	// Add 10 thoughts, should only keep last 8
 	for i := 1; i <= 10; i++ {

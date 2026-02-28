@@ -103,28 +103,48 @@ func (c *ClaudeCodeClient) Run(opts RunOptions, onChunk func(string), onSessionI
 			if msgRaw, ok := raw["message"]; ok {
 				var msg struct {
 					Content []struct {
-						Type string `json:"type"`
-						Text string `json:"text"`
+						Type  string `json:"type"`
+						Text  string `json:"text"`
+						Name  string `json:"name"`
+						Input json.RawMessage `json:"input"`
 					} `json:"content"`
 				}
 				if json.Unmarshal(msgRaw, &msg) == nil {
 					for _, block := range msg.Content {
-						if block.Type == "text" && block.Text != "" {
-							fullResponse.WriteString(block.Text)
-							onChunk(block.Text)
+						switch block.Type {
+						case "text":
+							if block.Text != "" {
+								fullResponse.WriteString(block.Text)
+								onChunk(block.Text)
+							}
+						case "thinking":
+							if block.Text != "" && opts.OnThought != nil {
+								opts.OnThought(block.Text)
+							}
+						case "tool_use":
+							if block.Name != "" && opts.OnIntent != nil {
+								opts.OnIntent(block.Name)
+							}
 						}
 					}
 				}
 			}
 		case "content_block_delta":
-			// Streaming delta: delta.text
+			// Streaming delta: delta.text or delta.thinking
 			if deltaRaw, ok := raw["delta"]; ok {
 				var delta struct {
-					Text string `json:"text"`
+					Type     string `json:"type"`
+					Text     string `json:"text"`
+					Thinking string `json:"thinking"`
 				}
-				if json.Unmarshal(deltaRaw, &delta) == nil && delta.Text != "" {
-					fullResponse.WriteString(delta.Text)
-					onChunk(delta.Text)
+				if json.Unmarshal(deltaRaw, &delta) == nil {
+					if delta.Thinking != "" && opts.OnThought != nil {
+						opts.OnThought(delta.Thinking)
+					}
+					if delta.Text != "" {
+						fullResponse.WriteString(delta.Text)
+						onChunk(delta.Text)
+					}
 				}
 			}
 		case "result":

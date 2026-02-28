@@ -22,6 +22,7 @@ const (
 	AuditLLMChunk     = "llm_response_chunk"
 	AuditLLMThought   = "llm_thought"
 	AuditCmdResult    = "cmd_result"
+	AuditIntent       = "intent"
 	AuditIntervention = "intervention"
 	AuditStatus       = "status"
 	AuditInfo         = "info"

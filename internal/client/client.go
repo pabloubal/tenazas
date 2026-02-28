@@ -26,6 +26,7 @@ type RunOptions struct {
 	MaxBudgetUSD float64 // cost ceiling (0 = unlimited)
 	OnThought    func(string) // optional callback for chain-of-thought chunks (used by ACP clients)
 	OnToolEvent  func(name, status, detail string) // optional callback for tool execution events (used by ACP clients)
+	OnIntent     func(string) // optional callback for current task/intent updates (e.g. report_intent)
 	OnPermission func(PermissionRequest) PermissionResponse // optional callback for interactive permission prompts
 }
 

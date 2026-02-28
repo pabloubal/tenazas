@@ -45,6 +45,7 @@ type acpCallbacks struct {
 	onSessionID  func(string)
 	onThought    func(string)
 	onToolEvent  func(name, status, detail string)
+	onIntent     func(string)
 	onPermission func(PermissionRequest) PermissionResponse
 }
 
@@ -110,6 +111,7 @@ func (c *CopilotClient) Run(opts RunOptions, onChunk func(string), onSessionID f
 		onSessionID:  onSessionID,
 		onThought:    opts.OnThought,
 		onToolEvent:  opts.OnToolEvent,
+		onIntent:     opts.OnIntent,
 		onPermission: opts.OnPermission,
 	}
 	c.callbacks.Store(sessionID, cbs)
@@ -375,6 +377,9 @@ func (c *CopilotClient) handleNotification(msg *jsonRPCMessage) {
 	case "tool_call":
 		if cbs.onToolEvent != nil {
 			cbs.onToolEvent(params.Update.Title, params.Update.Status, "")
+		}
+		if cbs.onIntent != nil && params.Update.Title != "" {
+			cbs.onIntent(params.Update.Title)
 		}
 	case "tool_call_update":
 		if cbs.onToolEvent != nil {

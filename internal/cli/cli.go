@@ -60,6 +60,7 @@ type CLI struct {
 	promptLines      int // current number of wrapped prompt lines (for footer positioning)
 	lastEscTime      time.Time
 	isStreaming       bool // true while engine is producing output; keeps cursor in scroll region
+	currentTask      string // current intent/task from the LLM (e.g. report_intent)
 	permPending      *permissionState // non-nil when waiting for user permission decision
 }
 
@@ -304,10 +305,11 @@ func (c *CLI) Run(resume bool) error {
 }
 
 func (c *CLI) pulseLoop() {
-	ticker := time.NewTicker(500 * time.Millisecond)
+	ticker := time.NewTicker(120 * time.Millisecond)
 	for range ticker.C {
 		c.mu.Lock()
-		if !c.isThinking {
+		active := c.isThinking || c.currentTask != ""
+		if !active {
 			c.mu.Unlock()
 			continue
 		}
@@ -525,6 +527,7 @@ func (c *CLI) listenEvents(sessionID string) {
 			if audit.Type == events.AuditLLMPrompt {
 				c.mu.Lock()
 				c.lastThought = ""
+				c.currentTask = ""
 				c.isStreaming = false
 				c.mu.Unlock()
 				c.setThinking(true)
@@ -556,6 +559,14 @@ func (c *CLI) listenEvents(sessionID string) {
 				continue
 			}
 
+			if audit.Type == events.AuditIntent {
+				c.mu.Lock()
+				c.currentTask = audit.Content
+				c.mu.Unlock()
+				c.renderLine()
+				continue
+			}
+
 			if audit.Type == events.AuditLLMChunk {
 				c.writeInScrollRegion(audit.Content)
 				continue
@@ -564,6 +575,7 @@ func (c *CLI) listenEvents(sessionID string) {
 			if audit.Type == events.AuditLLMResponse {
 				c.mu.Lock()
 				c.isStreaming = false
+				c.currentTask = ""
 				c.mu.Unlock()
 				continue
 			}
@@ -795,6 +807,26 @@ func (c *CLI) renderLineAtomic(sb *strings.Builder) {
 		}
 	}
 
+	if c.currentTask != "" {
+		// Show shimmer intent line instead of normal prompt
+		taskText := "• " + c.currentTask
+		_, cols2 := c.getTermSize()
+		maxLen := cols2 - MarginWidth - 2
+		taskRunes := []rune(taskText)
+		if len(taskRunes) > maxLen {
+			taskText = string(taskRunes[:maxLen-3]) + "..."
+		}
+		shimmer := shimmerText(taskText, c.pulseFrame)
+		fmt.Fprintf(sb, escMoveTo, startRow)
+		sb.WriteString(escClearLine)
+		sb.WriteString(Margin)
+		sb.WriteString(shimmer)
+		sb.WriteString(escClearToEOL)
+		c.lastRenderLines = 1
+		c.promptLines = 1
+		return
+	}
+
 	if c.isThinking {
 		sb.WriteString(escCyan)
 	}
@@ -863,6 +895,50 @@ func (c *CLI) cursorPosition(wrappedLines []string, availWidth int) (line, col i
 		col = len([]rune(wrappedLines[line]))
 	}
 	return line, col
+}
+
+// shimmerColors defines the purple gradient palette for the intent shimmer.
+var shimmerColors = []string{
+	"\x1b[38;5;59m",  // dim gray
+	"\x1b[38;5;60m",  // dim purple
+	"\x1b[38;5;97m",  // purple
+	"\x1b[38;5;134m", // lavender
+	"\x1b[38;5;141m", // bright lavender
+	"\x1b[38;5;183m", // brightest
+}
+
+// shimmerText applies a moving color gradient to text.
+func shimmerText(text string, frame int) string {
+	runes := []rune(text)
+	n := len(runes)
+	if n == 0 {
+		return ""
+	}
+	center := frame % n
+	radius := 8
+	levels := len(shimmerColors)
+
+	var sb strings.Builder
+	sb.Grow(n * 16)
+	for i, r := range runes {
+		dist := i - center
+		if dist < 0 {
+			dist = -dist
+		}
+		if dist > n/2 {
+			dist = n - dist
+		}
+		ci := levels - 1
+		if dist > 0 && dist < radius {
+			ci = levels - 1 - (dist * (levels - 1) / radius)
+		} else if dist >= radius {
+			ci = 0
+		}
+		sb.WriteString(shimmerColors[ci])
+		sb.WriteRune(r)
+	}
+	sb.WriteString(escReset)
+	return sb.String()
 }
 
 func (c *CLI) renderLine() {
@@ -1462,20 +1538,28 @@ func (c *CLI) setupTerminal() {
 }
 
 func (c *CLI) addThought(text string) {
-	var sb strings.Builder
-	c.writeAtomic(&sb, func(sb *strings.Builder) {
-		lines := strings.Split(text, "\n")
-		for _, l := range lines {
-			if l == "" {
-				continue
+	c.mu.Lock()
+	isImm := c.IsImmersive
+	c.mu.Unlock()
+
+	if isImm {
+		var sb strings.Builder
+		c.writeAtomic(&sb, func(sb *strings.Builder) {
+			lines := strings.Split(text, "\n")
+			for _, l := range lines {
+				if l == "" {
+					continue
+				}
+				c.drawer = append(c.drawer, l)
 			}
-			c.drawer = append(c.drawer, l)
-		}
-		if len(c.drawer) > DrawerHeight {
-			c.drawer = c.drawer[len(c.drawer)-DrawerHeight:]
-		}
-		c.redrawAllAtomic(sb)
-	})
+			if len(c.drawer) > DrawerHeight {
+				c.drawer = c.drawer[len(c.drawer)-DrawerHeight:]
+			}
+			c.redrawAllAtomic(sb)
+		})
+	} else {
+		c.writeInScrollRegion(escDim + text + escReset)
+	}
 }
 
 func (c *CLI) redrawAllAtomic(sb *strings.Builder) {

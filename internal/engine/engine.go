@@ -268,7 +268,8 @@ func (e *Engine) callLLM(skill *models.SkillGraph, state *models.StateDef, sess 
 		Yolo:         sess.Yolo,
 		ModelTier:    modelTier,
 		MaxBudgetUSD: budget,
-		OnThought:    func(t string) { e.log(sess, events.AuditLLMThought, state.SessionRole, t) },
+		OnThought: func(t string) { e.log(sess, events.AuditLLMThought, state.SessionRole, t) },
+		OnIntent:  func(text string) { e.log(sess, events.AuditIntent, state.SessionRole, text) },
 		OnToolEvent: func(name, status, detail string) {
 			msg := name
 			if status != "" {

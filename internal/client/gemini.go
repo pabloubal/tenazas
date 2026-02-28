@@ -76,6 +76,8 @@ func (g *GeminiClient) Run(opts RunOptions, onChunk func(string), onSessionID fu
 			Type      string `json:"type"`
 			SessionID string `json:"session_id"`
 			Content   string `json:"content"`
+			Thought   bool   `json:"thought"`
+			Action    string `json:"action"`
 		}
 		if err := json.Unmarshal(line, &resp); err != nil {
 			continue
@@ -87,9 +89,17 @@ func (g *GeminiClient) Run(opts RunOptions, onChunk func(string), onSessionID fu
 				onSessionID(resp.SessionID)
 			}
 		case "message":
-			if resp.Content != "" {
+			if resp.Thought && resp.Content != "" {
+				if opts.OnThought != nil {
+					opts.OnThought(resp.Content)
+				}
+			} else if resp.Content != "" {
 				fullResponse.WriteString(resp.Content)
 				onChunk(resp.Content)
+			}
+		case "action":
+			if resp.Action != "" && opts.OnIntent != nil {
+				opts.OnIntent(resp.Action)
 			}
 		}
 	}
