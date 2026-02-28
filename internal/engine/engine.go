@@ -267,6 +267,17 @@ func (e *Engine) callLLM(skill *models.SkillGraph, state *models.StateDef, sess 
 		Yolo:         sess.Yolo,
 		ModelTier:    modelTier,
 		MaxBudgetUSD: budget,
+		OnThought:    func(t string) { e.log(sess, events.AuditLLMThought, state.SessionRole, t) },
+		OnToolEvent: func(name, status, detail string) {
+			msg := name
+			if status != "" {
+				msg += " [" + status + "]"
+			}
+			if detail != "" {
+				msg += ": " + detail
+			}
+			e.log(sess, events.AuditCmdResult, state.SessionRole, msg)
+		},
 	}
 	if v, ok := e.sessionCtxs.Load(sess.ID); ok {
 		opts.Ctx = v.(context.Context)
@@ -374,6 +385,18 @@ func (e *Engine) onSID(sess *models.Session, state *models.StateDef) func(string
 }
 
 func (e *Engine) ExecuteCommand(sess *models.Session, cmd string) {
+	if e.IsRunning(sess.ID) {
+		e.CancelSession(sess.ID)
+		for i := 0; i < 50; i++ {
+			if !e.IsRunning(sess.ID) {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	e.running.Store(sess.ID, true)
+	defer e.running.Delete(sess.ID)
+
 	e.resumeAndRun(sess, func() {
 		e.log(sess, events.AuditInfo, "user", fmt.Sprintf("User approved command: %s", cmd))
 		exitCode, output := e.RunShell(cmd, sess.CWD)
@@ -383,6 +406,20 @@ func (e *Engine) ExecuteCommand(sess *models.Session, cmd string) {
 }
 
 func (e *Engine) ExecutePrompt(sess *models.Session, prompt string) {
+	// Cancel any in-flight prompt for this session before starting a new one
+	if e.IsRunning(sess.ID) {
+		e.CancelSession(sess.ID)
+		// Wait briefly for the previous goroutine to release the running slot
+		for i := 0; i < 50; i++ {
+			if !e.IsRunning(sess.ID) {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	e.running.Store(sess.ID, true)
+	defer e.running.Delete(sess.ID)
+
 	e.resumeAndRun(sess, func() {
 		e.executePromptInternal(sess, prompt)
 	})
@@ -423,6 +460,17 @@ func (e *Engine) executePromptInternal(sess *models.Session, prompt string) {
 		Yolo:         sess.Yolo,
 		ModelTier:    sess.ModelTier,
 		MaxBudgetUSD: sess.MaxBudgetUSD,
+		OnThought:    func(t string) { e.log(sess, events.AuditLLMThought, "default", t) },
+		OnToolEvent: func(name, status, detail string) {
+			msg := name
+			if status != "" {
+				msg += " [" + status + "]"
+			}
+			if detail != "" {
+				msg += ": " + detail
+			}
+			e.log(sess, events.AuditCmdResult, "default", msg)
+		},
 	}
 
 	onChunk := e.OnChunk(sess, &models.StateDef{SessionRole: "default"})
