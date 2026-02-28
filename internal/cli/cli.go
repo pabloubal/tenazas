@@ -278,8 +278,11 @@ func (c *CLI) Run(resume bool) error {
 
 	c.write(Margin + "Commands: /run <skill>, /last <N>, /intervene <action>, /mode, /budget, /help\n")
 
-	if resume && sess.SkillName != "" {
-		c.resumeSkill(sess)
+	if resume {
+		c.replayHistory(sess)
+		if sess.SkillName != "" {
+			c.resumeSkill(sess)
+		}
 	}
 
 	go c.listenEvents(sess.ID)
@@ -976,6 +979,32 @@ func (c *CLI) handleLast(sess *models.Session, n int) {
 		fmt.Fprintln(&output, f.Format(l))
 	}
 	c.write(output.String())
+}
+
+const replayHistoryEntries = 50
+
+func (c *CLI) replayHistory(sess *models.Session) {
+	logs, err := c.Sm.GetLastAudit(sess, replayHistoryEntries)
+	if err != nil || len(logs) == 0 {
+		return
+	}
+	f := &formatter.AnsiFormatter{}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "\n%s%s── Session History ──%s\n\n", Margin, escDim, escReset)
+	for _, entry := range logs {
+		switch entry.Type {
+		case events.AuditLLMPrompt:
+			fmt.Fprintf(&sb, "%s%s› %s%s\n", Margin, escBoldCyan, entry.Content, escReset)
+		case events.AuditLLMResponse:
+			fmt.Fprintf(&sb, "%s\n", entry.Content)
+		case events.AuditLLMChunk, events.AuditLLMThought:
+			continue
+		default:
+			fmt.Fprintf(&sb, "%s%s\n", Margin, f.Format(entry))
+		}
+	}
+	fmt.Fprintf(&sb, "\n%s%s── End of History ──%s\n\n", Margin, escDim, escReset)
+	c.write(sb.String())
 }
 
 // FooterData holds all values rendered in the status bar.
