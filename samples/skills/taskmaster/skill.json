@@ -11,6 +11,7 @@
     "picker": {
       "type": "action_loop",
       "session_role": "setup_assistant",
+      "model_tier": "medium",
       "approval_mode": "yolo",
       "instruction": "@prd-picker.md",
       "verify_cmd": "test -f docs/prd.md",
@@ -20,6 +21,7 @@
     "analyze_prd": {
       "type": "action_loop",
       "session_role": "taskmaster",
+      "model_tier": "high",
       "approval_mode": "yolo",
       "instruction": "@prompt.md",
       "verify_cmd": "tenazas work status",
