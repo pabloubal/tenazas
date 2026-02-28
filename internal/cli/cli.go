@@ -592,6 +592,9 @@ func (c *CLI) redrawScreenLocked() {
 	sb.WriteString(EscClear)
 	c.setupTerminalAtomic(&sb)
 	c.drawBrandingAtomic(&sb)
+	if c.sess != nil {
+		c.replayHistoryAtomic(&sb, c.sess)
+	}
 	c.redrawAllAtomic(&sb)
 	c.writeLocked(sb.String())
 }
@@ -1018,27 +1021,33 @@ func (c *CLI) handleLast(sess *models.Session, n int) {
 const replayHistoryEntries = 50
 
 func (c *CLI) replayHistory(sess *models.Session) {
+	var sb strings.Builder
+	c.replayHistoryAtomic(&sb, sess)
+	if sb.Len() > 0 {
+		c.write(sb.String())
+	}
+}
+
+func (c *CLI) replayHistoryAtomic(sb *strings.Builder, sess *models.Session) {
 	logs, err := c.Sm.GetLastAudit(sess, replayHistoryEntries)
 	if err != nil || len(logs) == 0 {
 		return
 	}
 	f := &formatter.AnsiFormatter{}
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "\n%s%s── Session History ──%s\n\n", Margin, escDim, escReset)
+	fmt.Fprintf(sb, "\n%s%s── Session History ──%s\n\n", Margin, escDim, escReset)
 	for _, entry := range logs {
 		switch entry.Type {
 		case events.AuditLLMPrompt:
-			fmt.Fprintf(&sb, "%s%s› %s%s\n", Margin, escBoldCyan, entry.Content, escReset)
+			fmt.Fprintf(sb, "%s%s› %s%s\n", Margin, escBoldCyan, entry.Content, escReset)
 		case events.AuditLLMResponse:
-			fmt.Fprintf(&sb, "%s\n", entry.Content)
+			fmt.Fprintf(sb, "%s\n", entry.Content)
 		case events.AuditLLMChunk, events.AuditLLMThought:
 			continue
 		default:
-			fmt.Fprintf(&sb, "%s%s\n", Margin, f.Format(entry))
+			fmt.Fprintf(sb, "%s%s\n", Margin, f.Format(entry))
 		}
 	}
-	fmt.Fprintf(&sb, "\n%s%s── End of History ──%s\n\n", Margin, escDim, escReset)
-	c.write(sb.String())
+	fmt.Fprintf(sb, "\n%s%s── End of History ──%s\n\n", Margin, escDim, escReset)
 }
 
 // FooterData holds all values rendered in the status bar.
