@@ -37,8 +37,9 @@ type Config struct {
 	MaxLoops   int    `json:"max_loops"`
 
 	// Clients
-	DefaultClient string                  `json:"default_client"`
-	Clients       map[string]ClientConfig `json:"clients,omitempty"`
+	DefaultClient    string                  `json:"default_client"`
+	DefaultModelTier string                  `json:"default_model_tier,omitempty"`
+	Clients          map[string]ClientConfig `json:"clients,omitempty"`
 
 	// Communication
 	Channel ChannelConfig `json:"channel"`

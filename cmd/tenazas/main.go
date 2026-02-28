@@ -78,7 +78,7 @@ func main() {
 
 	handleSignals()
 
-	c := cli.NewCLI(sm, reg, eng, cfg.DefaultClient)
+	c := cli.NewCLI(sm, reg, eng, cfg.DefaultClient, cfg.DefaultModelTier)
 	if err := c.Run(*resume); err != nil {
 		fmt.Printf("CLI Error: %v\n", err)
 	}

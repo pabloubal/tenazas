@@ -36,7 +36,8 @@ type CLI struct {
 	Sm            *session.Manager
 	Reg           *registry.Registry
 	Engine        *engine.Engine
-	DefaultClient string
+	DefaultClient    string
+	DefaultModelTier string
 	In            io.Reader
 	Out           io.Writer
 	sess          *models.Session
@@ -96,14 +97,15 @@ func (c *CLI) refreshGitBranch() {
 	c.mu.Unlock()
 }
 
-func NewCLI(sm *session.Manager, reg *registry.Registry, eng *engine.Engine, defaultClient string) *CLI {
+func NewCLI(sm *session.Manager, reg *registry.Registry, eng *engine.Engine, defaultClient, defaultModelTier string) *CLI {
 	return &CLI{
-		Sm:            sm,
-		Reg:           reg,
-		Engine:        eng,
-		DefaultClient: defaultClient,
-		In:            os.Stdin,
-		Out:           os.Stdout,
+		Sm:               sm,
+		Reg:              reg,
+		Engine:           eng,
+		DefaultClient:    defaultClient,
+		DefaultModelTier: defaultModelTier,
+		In:               os.Stdin,
+		Out:              os.Stdout,
 	}
 }
 
@@ -487,6 +489,7 @@ func (c *CLI) initializeSession(resume bool) (*models.Session, error) {
 	sess := &models.Session{
 		ID:           uuid.New().String(),
 		Client:       c.DefaultClient,
+		ModelTier:    c.DefaultModelTier,
 		CWD:          cwd,
 		CreatedAt:    now,
 		LastUpdated:  now,
@@ -1340,8 +1343,15 @@ func (c *CLI) drawFooterAtomic(sb *strings.Builder, sess *models.Session) {
 	fmt.Fprintf(sb, escMoveTo, rows-5-extra)
 	sb.WriteString(escClearLine)
 	if c.currentTask != "" {
-		taskText := "• " + c.currentTask
+		prefix := "• "
+		if sess.SkillName != "" && sess.ActiveNode != "" {
+			prefix += "Step " + sess.ActiveNode + ": "
+		}
+		taskText := prefix + c.currentTask
 		maxLen := cols - MarginWidth - 2
+		if maxLen < 4 {
+			maxLen = 4
+		}
 		taskRunes := []rune(taskText)
 		if len(taskRunes) > maxLen {
 			taskText = string(taskRunes[:maxLen-3]) + "..."
