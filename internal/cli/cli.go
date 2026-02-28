@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"tenazas/internal/client"
 	"tenazas/internal/engine"
 	"tenazas/internal/events"
 	"tenazas/internal/formatter"
@@ -24,6 +25,12 @@ import (
 	"tenazas/internal/session"
 	"tenazas/internal/skill"
 )
+
+// permissionState holds the pending permission request and the response channel.
+type permissionState struct {
+	req  client.PermissionRequest
+	resp chan client.PermissionResponse
+}
 
 type CLI struct {
 	Sm            *session.Manager
@@ -53,6 +60,7 @@ type CLI struct {
 	promptLines      int // current number of wrapped prompt lines (for footer positioning)
 	lastEscTime      time.Time
 	isStreaming       bool // true while engine is producing output; keeps cursor in scroll region
+	permPending      *permissionState // non-nil when waiting for user permission decision
 }
 
 func (c *CLI) refreshSkillCount() {
@@ -276,6 +284,17 @@ func (c *CLI) Run(resume bool) error {
 		if sess.SkillName != "" {
 			c.resumeSkill(sess)
 		}
+	}
+
+	// Wire interactive permission callback for non-YOLO modes
+	c.Engine.OnPermission = func(req client.PermissionRequest) client.PermissionResponse {
+		respCh := make(chan client.PermissionResponse, 1)
+		c.mu.Lock()
+		c.permPending = &permissionState{req: req, resp: respCh}
+		c.mu.Unlock()
+		c.renderPermission(req)
+		resp := <-respCh
+		return resp
 	}
 
 	go c.listenEvents(sess.ID)
@@ -861,14 +880,36 @@ func (c *CLI) replRaw(sess *models.Session) error {
 		}
 
 		c.mu.Lock()
+		// Ctrl+C always exits, even during permission prompts
+		if r == '\x03' {
+			// If permission pending, reject it before exiting
+			if c.permPending != nil {
+				perm := c.permPending
+				c.permPending = nil
+				c.mu.Unlock()
+				c.writePermissionFeedback(perm.req.Title, "cancelled")
+				optID := findOptionByKind(perm.req.Options, "reject_once")
+				perm.resp <- client.PermissionResponse{OptionID: optID}
+			} else {
+				c.mu.Unlock()
+			}
+			return nil
+		}
+		// If a permission prompt is pending, route the keypress to the permission handler
+		if c.permPending != nil {
+			if c.handlePermissionKeyLocked(r) {
+				c.mu.Unlock()
+				continue
+			}
+			// Key didn't match any permission option — ignore while permission is pending
+			c.mu.Unlock()
+			continue
+		}
 		if r != '\t' {
 			c.lastTabTime = time.Time{}
 		}
 
 		switch r {
-		case '\x03':
-			c.mu.Unlock()
-			return nil
 		case '\r', '\n':
 			line := string(c.input)
 			c.input = nil
@@ -1413,4 +1454,112 @@ func (c *CLI) drawDrawer() {
 
 func (c *CLI) writeEscape(seq string) {
 	c.write(seq)
+}
+
+// renderPermission displays a tool permission request in the scroll region.
+func (c *CLI) renderPermission(req client.PermissionRequest) {
+	var sb strings.Builder
+	sb.WriteString("\n")
+	kindColor := "\x1b[33m" // yellow for execute
+	if req.Kind == "read" {
+		kindColor = escCyan
+	} else if req.Kind == "edit" {
+		kindColor = "\x1b[35m" // magenta
+	}
+	sb.WriteString(fmt.Sprintf("%s%s● %s%s", Margin, kindColor, req.Title, escReset))
+	if req.Command != "" {
+		sb.WriteString(fmt.Sprintf("\n%s  %s%s%s", Margin, escDim, req.Command, escReset))
+	}
+	sb.WriteString("\n")
+	// Show keybindings for the standard options
+	for _, opt := range req.Options {
+		key := ""
+		switch opt.Kind {
+		case "allow_once":
+			key = "y"
+		case "allow_always":
+			key = "a"
+		case "reject_once":
+			key = "n"
+		case "reject_always":
+			key = "N"
+		}
+		if key != "" {
+			sb.WriteString(fmt.Sprintf("%s  %s[%s]%s %s", Margin, escDim, key, escReset, opt.Name))
+			sb.WriteString("  ")
+		}
+	}
+	sb.WriteString("\n")
+	c.writeInScrollRegion(sb.String())
+}
+
+// handlePermissionKeyLocked processes a keypress while a permission prompt is active.
+// Returns true if the key was consumed. Must be called with c.mu held.
+func (c *CLI) handlePermissionKeyLocked(r rune) bool {
+	perm := c.permPending
+	if perm == nil {
+		return false
+	}
+
+	var optionID string
+	var optionKind string
+	switch r {
+	case 'y', 'Y':
+		optionID = findOptionByKind(perm.req.Options, "allow_once")
+		optionKind = "allow_once"
+	case 'a', 'A':
+		optionID = findOptionByKind(perm.req.Options, "allow_always")
+		optionKind = "allow_always"
+	case 'n':
+		optionID = findOptionByKind(perm.req.Options, "reject_once")
+		optionKind = "reject_once"
+	case 'N':
+		optionID = findOptionByKind(perm.req.Options, "reject_always")
+		optionKind = "reject_always"
+	default:
+		return false // not a permission key, ignore
+	}
+
+	if optionID == "" {
+		return false
+	}
+
+	c.permPending = nil
+	c.mu.Unlock()
+	c.writePermissionFeedback(perm.req.Title, optionKind)
+	perm.resp <- client.PermissionResponse{OptionID: optionID}
+	c.mu.Lock()
+	return true
+}
+
+func findOptionByKind(opts []client.PermissionOption, kind string) string {
+	for _, o := range opts {
+		if o.Kind == kind {
+			return o.OptionID
+		}
+	}
+	return ""
+}
+
+// writePermissionFeedback shows the user's decision inline after a permission prompt.
+func (c *CLI) writePermissionFeedback(title, kind string) {
+	var label, color string
+	switch kind {
+	case "allow_once":
+		label = "Allowed (once)"
+		color = escGreen
+	case "allow_always":
+		label = "Allowed (always)"
+		color = escGreen
+	case "reject_once":
+		label = "Denied"
+		color = "\x1b[31m" // red
+	case "reject_always":
+		label = "Denied (always)"
+		color = "\x1b[31m"
+	default:
+		label = "Cancelled"
+		color = "\x1b[33m" // yellow
+	}
+	c.writeInScrollRegion(fmt.Sprintf("%s  %s└ %s%s\n", Margin, color, label, escReset))
 }

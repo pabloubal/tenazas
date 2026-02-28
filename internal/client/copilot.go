@@ -41,10 +41,11 @@ type CopilotClient struct {
 
 // acpCallbacks holds the streaming callbacks for an active prompt.
 type acpCallbacks struct {
-	onChunk     func(string)
-	onSessionID func(string)
-	onThought   func(string)
-	onToolEvent func(name, status, detail string)
+	onChunk      func(string)
+	onSessionID  func(string)
+	onThought    func(string)
+	onToolEvent  func(name, status, detail string)
+	onPermission func(PermissionRequest) PermissionResponse
 }
 
 // jsonRPCMessage is the wire format for JSON-RPC 2.0 messages.
@@ -106,9 +107,10 @@ func (c *CopilotClient) Run(opts RunOptions, onChunk func(string), onSessionID f
 			fullResponse.WriteString(text)
 			onChunk(text)
 		},
-		onSessionID: onSessionID,
-		onThought:   opts.OnThought,
-		onToolEvent: opts.OnToolEvent,
+		onSessionID:  onSessionID,
+		onThought:    opts.OnThought,
+		onToolEvent:  opts.OnToolEvent,
+		onPermission: opts.OnPermission,
 	}
 	c.callbacks.Store(sessionID, cbs)
 	defer c.callbacks.Delete(sessionID)
@@ -229,37 +231,90 @@ func (c *CopilotClient) handleServerRequest(msg *jsonRPCMessage) {
 	case "session/request_permission":
 		var params struct {
 			SessionID string `json:"sessionId"`
-			Options   []struct {
+			ToolCall  struct {
+				ToolCallID string `json:"toolCallId"`
+				Title      string `json:"title"`
+				Kind       string `json:"kind"`
+				RawInput   struct {
+					Command string `json:"command"`
+				} `json:"rawInput"`
+			} `json:"toolCall"`
+			Options []struct {
 				OptionID string `json:"optionId"`
+				Name     string `json:"name"`
 				Kind     string `json:"kind"`
 			} `json:"options"`
 		}
 		json.Unmarshal(msg.Params, &params)
 
-		// Pick the best option: prefer allow_always, then allow_once.
-		optionID := ""
-		for _, o := range params.Options {
-			if o.Kind == "allow_always" {
-				optionID = o.OptionID
-				break
-			}
-			if o.Kind == "allow_once" && optionID == "" {
-				optionID = o.OptionID
-			}
-		}
-		if optionID == "" && len(params.Options) > 0 {
-			optionID = params.Options[0].OptionID
+		// Check if a per-session OnPermission callback is registered.
+		var onPerm func(PermissionRequest) PermissionResponse
+		if cbsVal, ok := c.callbacks.Load(params.SessionID); ok {
+			onPerm = cbsVal.(*acpCallbacks).onPermission
 		}
 
-		c.respondToServer(*msg.ID, map[string]any{
-			"outcome": map[string]any{
-				"outcome":  "selected",
-				"optionId": optionID,
-			},
-		})
+		var optionID string
+		if onPerm != nil {
+			// Build the request for the interactive callback.
+			req := PermissionRequest{
+				ToolCallID: params.ToolCall.ToolCallID,
+				Title:      params.ToolCall.Title,
+				Kind:       params.ToolCall.Kind,
+				Command:    params.ToolCall.RawInput.Command,
+			}
+			for _, o := range params.Options {
+				req.Options = append(req.Options, PermissionOption{
+					OptionID: o.OptionID,
+					Name:     o.Name,
+					Kind:     o.Kind,
+				})
+			}
+			resp := onPerm(req)
+			optionID = resp.OptionID
+		} else {
+			// No callback — auto-approve (YOLO mode).
+			optionID = autoApproveOption(params.Options)
+		}
+
+		if optionID == "" {
+			// Fallback: send cancellation outcome if no valid option selected
+			c.respondToServer(*msg.ID, map[string]any{
+				"outcome": map[string]any{
+					"outcome": "cancelled",
+				},
+			})
+		} else {
+			c.respondToServer(*msg.ID, map[string]any{
+				"outcome": map[string]any{
+					"outcome":  "selected",
+					"optionId": optionID,
+				},
+			})
+		}
 	default:
 		c.respondToServer(*msg.ID, map[string]any{})
 	}
+}
+
+// autoApproveOption picks the best auto-approve option from the list.
+func autoApproveOption(options []struct {
+	OptionID string `json:"optionId"`
+	Name     string `json:"name"`
+	Kind     string `json:"kind"`
+}) string {
+	id := ""
+	for _, o := range options {
+		if o.Kind == "allow_always" {
+			return o.OptionID
+		}
+		if o.Kind == "allow_once" && id == "" {
+			id = o.OptionID
+		}
+	}
+	if id == "" && len(options) > 0 {
+		id = options[0].OptionID
+	}
+	return id
 }
 
 // respondToServer writes a JSON-RPC response to a server-initiated request.

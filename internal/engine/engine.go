@@ -21,6 +21,7 @@ type Engine struct {
 	Clients       map[string]client.Client
 	DefaultClient string
 	MaxLoops      int
+	OnPermission  func(client.PermissionRequest) client.PermissionResponse // set by CLI/Telegram for interactive prompts
 	intervs       map[string]chan string
 	intervsMux    sync.RWMutex
 	running       sync.Map
@@ -279,6 +280,9 @@ func (e *Engine) callLLM(skill *models.SkillGraph, state *models.StateDef, sess 
 			e.log(sess, events.AuditCmdResult, state.SessionRole, msg)
 		},
 	}
+	if !sess.Yolo && e.OnPermission != nil {
+		opts.OnPermission = e.OnPermission
+	}
 	if v, ok := e.sessionCtxs.Load(sess.ID); ok {
 		opts.Ctx = v.(context.Context)
 	}
@@ -471,6 +475,9 @@ func (e *Engine) executePromptInternal(sess *models.Session, prompt string) {
 			}
 			e.log(sess, events.AuditCmdResult, "default", msg)
 		},
+	}
+	if !sess.Yolo && e.OnPermission != nil {
+		opts.OnPermission = e.OnPermission
 	}
 
 	onChunk := e.OnChunk(sess, &models.StateDef{SessionRole: "default"})

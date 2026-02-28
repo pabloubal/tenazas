@@ -26,6 +26,28 @@ type RunOptions struct {
 	MaxBudgetUSD float64 // cost ceiling (0 = unlimited)
 	OnThought    func(string) // optional callback for chain-of-thought chunks (used by ACP clients)
 	OnToolEvent  func(name, status, detail string) // optional callback for tool execution events (used by ACP clients)
+	OnPermission func(PermissionRequest) PermissionResponse // optional callback for interactive permission prompts
+}
+
+// PermissionOption describes one choice in a permission prompt.
+type PermissionOption struct {
+	OptionID string // unique id to return in the response
+	Name     string // human-readable label
+	Kind     string // allow_once, allow_always, reject_once, reject_always
+}
+
+// PermissionRequest is sent when the agent wants to run a tool.
+type PermissionRequest struct {
+	ToolCallID string
+	Title      string
+	Kind       string // tool kind: read, edit, execute, etc.
+	Command    string // for shell executions, the raw command
+	Options    []PermissionOption
+}
+
+// PermissionResponse is the user's decision on a permission request.
+type PermissionResponse struct {
+	OptionID string // the selected PermissionOption.OptionID
 }
 
 // Client is the strategy interface every coding-agent backend must implement.
