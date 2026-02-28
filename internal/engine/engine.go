@@ -126,7 +126,7 @@ func (e *Engine) initializeExecution(skill *models.SkillGraph, sess *models.Sess
 		sess.Status = models.StatusRunning
 		sess.LoopCount = 0
 		e.Sm.Save(sess)
-		e.log(sess, events.AuditStatus, "engine", fmt.Sprintf("Started skill %s at node %s", skill.Name, sess.ActiveNode))
+		e.log(sess, events.AuditStatus, "engine", fmt.Sprintf("Started skill %s at node %s", skill.Name, sess.ActiveNode), events.RoleSystem)
 	} else if sess.Status == models.StatusRunning && sess.PendingFeedback == "" {
 		sess.PendingFeedback = resumeSentinel
 		e.Sm.Save(sess)
@@ -144,7 +144,7 @@ func (e *Engine) shouldContinue(sess *models.Session) bool {
 
 func (e *Engine) terminate(sess *models.Session, status, reason string) {
 	sess.Status = status
-	e.log(sess, events.AuditStatus, "engine", fmt.Sprintf("Status: %s - %s", status, reason))
+	e.log(sess, events.AuditStatus, "engine", fmt.Sprintf("Status: %s - %s", status, reason), events.RoleSystem)
 	e.Sm.Save(sess)
 
 	state := events.TaskStateCompleted
@@ -155,7 +155,7 @@ func (e *Engine) terminate(sess *models.Session, status, reason string) {
 }
 
 func (e *Engine) awaitIntervention(skill *models.SkillGraph, state *models.StateDef, sess *models.Session) {
-	e.log(sess, events.AuditIntervention, "engine", fmt.Sprintf("Waiting for intervention at %s", sess.ActiveNode))
+	e.log(sess, events.AuditIntervention, "engine", fmt.Sprintf("Waiting for intervention at %s", sess.ActiveNode), events.RoleSystem)
 
 	e.publishTaskStatus(sess.ID, events.TaskStateBlocked, map[string]string{
 		"node":        sess.ActiveNode,
@@ -206,7 +206,7 @@ func (e *Engine) executeActionLoop(skill *models.SkillGraph, state *models.State
 		return
 	}
 	sess.PendingFeedback = ""
-	e.log(sess, events.AuditLLMResponse, state.SessionRole, response)
+	e.log(sess, events.AuditLLMResponse, state.SessionRole, response, events.RoleAssistant)
 
 	if state.VerifyCmd == "" {
 		e.completeState(state, sess, "")
@@ -224,7 +224,7 @@ func (e *Engine) executeActionLoop(skill *models.SkillGraph, state *models.State
 }
 
 func (e *Engine) executeTool(state *models.StateDef, sess *models.Session) {
-	e.log(sess, events.AuditInfo, "engine", "Executing tool: "+state.Command)
+	e.log(sess, events.AuditInfo, "engine", "Executing tool: "+state.Command, events.RoleSystem)
 	exitCode, out := e.RunShell(state.Command, sess.CWD)
 	e.logCmd(sess, "engine", fmt.Sprintf("Exit Code: %d\nOutput: %s", exitCode, out), exitCode)
 
@@ -244,7 +244,7 @@ func (e *Engine) executeTool(state *models.StateDef, sess *models.Session) {
 
 func (e *Engine) callLLM(skill *models.SkillGraph, state *models.StateDef, sess *models.Session) (string, error) {
 	prompt := e.BuildPrompt(state, sess)
-	e.log(sess, events.AuditLLMPrompt, state.SessionRole, prompt)
+	e.log(sess, events.AuditLLMPrompt, state.SessionRole, prompt, events.RoleUser)
 
 	roleID := sess.RoleCache[state.SessionRole]
 	approvalMode := state.ApprovalMode
@@ -272,8 +272,8 @@ func (e *Engine) callLLM(skill *models.SkillGraph, state *models.StateDef, sess 
 		Yolo:         yolo,
 		ModelTier:    modelTier,
 		MaxBudgetUSD: budget,
-		OnThought: func(t string) { e.log(sess, events.AuditLLMThought, state.SessionRole, t) },
-		OnIntent:  func(text string) { e.log(sess, events.AuditIntent, state.SessionRole, text) },
+		OnThought: func(t string) { e.log(sess, events.AuditLLMThought, state.SessionRole, t, events.RoleAssistant) },
+		OnIntent:  func(text string) { e.log(sess, events.AuditIntent, state.SessionRole, text, events.RoleAssistant) },
 		OnToolEvent: func(name, status, detail string) {
 			msg := name
 			if status != "" {
@@ -282,7 +282,7 @@ func (e *Engine) callLLM(skill *models.SkillGraph, state *models.StateDef, sess 
 			if detail != "" {
 				msg += ": " + detail
 			}
-			e.log(sess, events.AuditCmdResult, state.SessionRole, msg)
+			e.log(sess, events.AuditCmdResult, state.SessionRole, msg, events.RoleSystem)
 		},
 	}
 	if !yolo && e.OnPermission != nil {
@@ -350,7 +350,7 @@ func (e *Engine) transitionToFailRoute(skill *models.SkillGraph, state *models.S
 		e.Sm.Save(sess)
 		return
 	}
-	e.log(sess, events.AuditInfo, "engine", fmt.Sprintf("Fail route: %s (Loop %d)", state.OnFailRoute, sess.LoopCount))
+	e.log(sess, events.AuditInfo, "engine", fmt.Sprintf("Fail route: %s (Loop %d)", state.OnFailRoute, sess.LoopCount), events.RoleSystem)
 	sess.PendingFeedback = feedback
 	sess.ActiveNode = state.OnFailRoute
 	sess.RetryCount = 0
@@ -382,9 +382,9 @@ func (e *Engine) BuildPrompt(state *models.StateDef, sess *models.Session) strin
 
 func (e *Engine) OnChunk(sess *models.Session, state *models.StateDef) func(string) {
 	parser := &ThoughtParser{
-		OnThought: func(t string) { e.log(sess, events.AuditLLMThought, state.SessionRole, t) },
+		OnThought: func(t string) { e.log(sess, events.AuditLLMThought, state.SessionRole, t, events.RoleAssistant) },
 		OnText: func(t string) {
-			e.Sm.AppendAudit(sess, events.AuditEntry{Type: events.AuditLLMChunk, Source: state.SessionRole, Content: t})
+			e.Sm.AppendAudit(sess, events.AuditEntry{Type: events.AuditLLMChunk, Source: state.SessionRole, Role: events.RoleAssistant, Content: t})
 		},
 	}
 	return parser.Parse
@@ -411,7 +411,7 @@ func (e *Engine) ExecuteCommand(sess *models.Session, cmd string) {
 	defer e.running.Delete(sess.ID)
 
 	e.resumeAndRun(sess, func() {
-		e.log(sess, events.AuditInfo, "user", fmt.Sprintf("User approved command: %s", cmd))
+		e.log(sess, events.AuditInfo, "user", fmt.Sprintf("User approved command: %s", cmd), events.RoleUser)
 		exitCode, output := e.RunShell(cmd, sess.CWD)
 		e.logCmd(sess, "engine", fmt.Sprintf("Exit Code: %d\n%s", exitCode, output), exitCode)
 		e.executePromptInternal(sess, output)
@@ -463,7 +463,7 @@ func (e *Engine) executePromptInternal(sess *models.Session, prompt string) {
 		e.Sm.Save(sess)
 	}
 
-	e.log(sess, events.AuditLLMPrompt, "user", prompt)
+	e.log(sess, events.AuditLLMPrompt, "user", prompt, events.RoleUser)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	e.cancelFns.Store(sess.ID, cancel)
@@ -483,7 +483,7 @@ func (e *Engine) executePromptInternal(sess *models.Session, prompt string) {
 		Yolo:         sess.Yolo,
 		ModelTier:    sess.ModelTier,
 		MaxBudgetUSD: sess.MaxBudgetUSD,
-		OnThought:    func(t string) { e.log(sess, events.AuditLLMThought, "default", t) },
+		OnThought:    func(t string) { e.log(sess, events.AuditLLMThought, "default", t, events.RoleAssistant) },
 		OnToolEvent: func(name, status, detail string) {
 			msg := name
 			if status != "" {
@@ -492,7 +492,7 @@ func (e *Engine) executePromptInternal(sess *models.Session, prompt string) {
 			if detail != "" {
 				msg += ": " + detail
 			}
-			e.log(sess, events.AuditCmdResult, "default", msg)
+			e.log(sess, events.AuditCmdResult, "default", msg, events.RoleSystem)
 		},
 	}
 	if !sess.Yolo && e.OnPermission != nil {
@@ -509,12 +509,12 @@ func (e *Engine) executePromptInternal(sess *models.Session, prompt string) {
 
 	if err != nil {
 		if ctx.Err() == context.Canceled {
-			e.log(sess, events.AuditInfo, "engine", "Operation cancelled by user")
+			e.log(sess, events.AuditInfo, "engine", "Operation cancelled by user", events.RoleSystem)
 		} else {
-			e.log(sess, events.AuditInfo, "engine", "LLM Error: "+err.Error())
+			e.log(sess, events.AuditInfo, "engine", "LLM Error: "+err.Error(), events.RoleSystem)
 		}
 	} else {
-		e.log(sess, events.AuditLLMResponse, "default", resp)
+		e.log(sess, events.AuditLLMResponse, "default", resp, events.RoleAssistant)
 	}
 }
 
@@ -579,10 +579,11 @@ func (e *Engine) RunShell(cmdStr, cwd string) (int, string) {
 	return exitCode, strOut
 }
 
-func (e *Engine) log(sess *models.Session, eventType, source, content string) {
+func (e *Engine) log(sess *models.Session, eventType, source, content, role string) {
 	e.Sm.AppendAudit(sess, events.AuditEntry{
 		Type:    eventType,
 		Source:  source,
+		Role:    role,
 		Content: content,
 	})
 }
@@ -591,6 +592,7 @@ func (e *Engine) logCmd(sess *models.Session, source, content string, exitCode i
 	e.Sm.AppendAudit(sess, events.AuditEntry{
 		Type:     events.AuditCmdResult,
 		Source:   source,
+		Role:     events.RoleSystem,
 		Content:  content,
 		ExitCode: exitCode,
 	})

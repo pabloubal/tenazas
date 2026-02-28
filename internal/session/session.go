@@ -52,6 +52,7 @@ func (sm *Manager) Log(s *models.Session, eventType, content string) {
 	sm.AppendAudit(s, events.AuditEntry{
 		Type:    eventType,
 		Source:  "engine",
+		Role:    events.RoleSystem,
 		Content: content,
 	})
 }
@@ -380,6 +381,12 @@ func (sm *Manager) AppendAudit(s *models.Session, entry events.AuditEntry) error
 
 	events.GlobalBus.Publish(events.Event{Type: events.EventAudit, SessionID: s.ID, Payload: entry})
 	return err
+}
+
+// AuditPath returns the filesystem path to the session's audit JSONL file.
+func (sm *Manager) AuditPath(s *models.Session) string {
+	relDir := sm.Storage.WorkspaceDir(s.CWD)
+	return filepath.Join(sm.StoragePath, relDir, s.ID+".audit.jsonl")
 }
 
 func (sm *Manager) GetLastAudit(s *models.Session, n int) ([]events.AuditEntry, error) {

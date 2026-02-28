@@ -119,13 +119,23 @@ func (h *Runner) Trigger(hb models.Heartbeat) {
 
 	for _, skillName := range hb.Skills {
 		h.log(fmt.Sprintf("Heartbeat %s: Running skill %s", hb.Name, skillName))
-		if err := h.runSkillHeadless(hb.Name, skillName, hb.Path, activeTask); err != nil {
-			h.log(fmt.Sprintf("Heartbeat %s: Skill %s failed: %v", hb.Name, skillName, err))
+		sess, err := h.runSkillHeadless(hb.Name, skillName, hb.Path, activeTask)
+		if err != nil {
+			summary := fmt.Sprintf("Heartbeat %s: Skill %s failed: %v", hb.Name, skillName, err)
+			if sess != nil {
+				summary += fmt.Sprintf(" | session=%s node=%s status=%s", sess.ID, sess.ActiveNode, sess.Status)
+				summary += fmt.Sprintf(" | audit=%s", h.sm.AuditPath(sess))
+			}
+			h.log(summary)
 			if activeTask != nil {
 				activeTask.FailureCount++
 				task.WriteTask(activeTask.FilePath, activeTask)
 			}
 			break
+		}
+		if sess != nil {
+			h.log(fmt.Sprintf("Heartbeat %s: Skill %s completed | session=%s node=%s status=%s | audit=%s",
+				hb.Name, skillName, sess.ID, sess.ActiveNode, sess.Status, h.sm.AuditPath(sess)))
 		}
 	}
 }
@@ -154,10 +164,10 @@ func (h *Runner) blockTask(hbName string, t *task.Task) {
 	}
 }
 
-func (h *Runner) runSkillHeadless(hbName, skillName, cwd string, activeTask *task.Task) error {
+func (h *Runner) runSkillHeadless(hbName, skillName, cwd string, activeTask *task.Task) (*models.Session, error) {
 	skill, err := h.sm.LoadSkill(skillName)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	title := "Heartbeat: " + hbName
@@ -184,15 +194,16 @@ func (h *Runner) runSkillHeadless(hbName, skillName, cwd string, activeTask *tas
 	sess.LastUpdated = time.Now()
 
 	if err := h.sm.Save(sess); err != nil {
-		return err
+		return nil, err
 	}
 
+	h.log(fmt.Sprintf("Heartbeat %s: Skill %s using session %s | audit=%s", hbName, skillName, sess.ID, h.sm.AuditPath(sess)))
 	h.engine.Run(skill, sess)
 
 	if sess.Status == models.StatusFailed {
-		return fmt.Errorf("skill execution failed")
+		return sess, fmt.Errorf("skill execution failed")
 	}
-	return nil
+	return sess, nil
 }
 
 func (h *Runner) resolveTasksDir(hbPath string) string {

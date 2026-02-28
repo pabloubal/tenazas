@@ -36,11 +36,19 @@ const (
 	TaskStateFailed    = "TASK_FAILED"
 )
 
+// Conversation role constants indicate who is speaking in the audit log.
+const (
+	RoleUser      = "user"      // Content sent to the LLM (prompts, feedback)
+	RoleAssistant = "assistant" // Content received from the LLM (responses, thoughts)
+	RoleSystem    = "system"    // Framework events (status, tools, interventions)
+)
+
 // AuditEntry represents a single audit log entry.
 type AuditEntry struct {
 	Timestamp time.Time `json:"timestamp"`
 	Type      string    `json:"type"`
 	Source    string    `json:"source"`
+	Role      string    `json:"role,omitempty"`
 	Content   string    `json:"content"`
 	ExitCode  int       `json:"exit_code,omitempty"`
 }

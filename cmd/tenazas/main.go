@@ -17,6 +17,7 @@ import (
 	"tenazas/internal/events"
 	"tenazas/internal/formatter"
 	"tenazas/internal/heartbeat"
+	"tenazas/internal/logs"
 	"tenazas/internal/models"
 	"tenazas/internal/onboard"
 	"tenazas/internal/registry"
@@ -44,6 +45,12 @@ func main() {
 	}
 
 	sm := session.NewManager(cfg.StorageDir)
+
+	if flag.Arg(0) == "logs" {
+		logs.HandleCommand(sm, flag.Args()[1:])
+		return
+	}
+
 	reg, err := registry.NewRegistry(cfg.StorageDir)
 	if err != nil {
 		log.Fatalf("Failed to init registry: %v", err)
