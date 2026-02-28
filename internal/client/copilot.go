@@ -22,12 +22,13 @@ type CopilotClient struct {
 	logPath string
 	models  map[string]string // tier → model ID
 
-	mu       sync.Mutex
-	proc     *exec.Cmd
-	stdin    io.WriteCloser
-	scanner  *bufio.Scanner
-	logFile  *os.File
-	nextID   atomic.Int64
+	mu      sync.Mutex // protects process lifecycle (ensureProcess)
+	writeMu sync.Mutex // protects stdin writes
+	proc    *exec.Cmd
+	stdin   io.WriteCloser
+	scanner *bufio.Scanner
+	logFile *os.File
+	nextID  atomic.Int64
 	initDone bool
 
 	// callbacks holds per-request notification handlers, keyed by session ID.
@@ -175,8 +176,9 @@ func (c *CopilotClient) ensureProcess(opts RunOptions) error {
 	// Start background reader.
 	go c.readLoop()
 
-	// Initialize the ACP connection.
-	result, err := c.callLocked("initialize", map[string]any{
+	// Initialize the ACP connection (mu is held so no concurrent ensureProcess,
+	// but sendAndWait only takes writeMu which is free).
+	result, err := c.sendAndWait("initialize", map[string]any{
 		"protocolVersion": 1,
 	})
 	if err != nil {
@@ -202,16 +204,79 @@ func (c *CopilotClient) readLoop() {
 			continue
 		}
 
-		if msg.ID != nil && msg.Method == "" {
-			// Response to a request.
+		if msg.ID != nil && msg.Method != "" {
+			// Server-initiated request (e.g., session/request_permission).
+			c.handleServerRequest(&msg)
+		} else if msg.ID != nil {
+			// Response to a client request.
 			if ch, ok := c.responses.Load(*msg.ID); ok {
 				ch.(chan *jsonRPCMessage) <- &msg
 			}
 		} else if msg.Method != "" {
-			// Notification.
+			// Notification (no id).
 			c.handleNotification(&msg)
 		}
 	}
+}
+
+// handleServerRequest responds to server-initiated JSON-RPC requests.
+// The primary case is session/request_permission: the ACP agent asks the
+// client to approve or deny a tool call.
+func (c *CopilotClient) handleServerRequest(msg *jsonRPCMessage) {
+	c.log("[ACP] server request: method=%s id=%d\n", msg.Method, *msg.ID)
+
+	switch msg.Method {
+	case "session/request_permission":
+		var params struct {
+			SessionID string `json:"sessionId"`
+			Options   []struct {
+				OptionID string `json:"optionId"`
+				Kind     string `json:"kind"`
+			} `json:"options"`
+		}
+		json.Unmarshal(msg.Params, &params)
+
+		// Pick the best option: prefer allow_always, then allow_once.
+		optionID := ""
+		for _, o := range params.Options {
+			if o.Kind == "allow_always" {
+				optionID = o.OptionID
+				break
+			}
+			if o.Kind == "allow_once" && optionID == "" {
+				optionID = o.OptionID
+			}
+		}
+		if optionID == "" && len(params.Options) > 0 {
+			optionID = params.Options[0].OptionID
+		}
+
+		c.respondToServer(*msg.ID, map[string]any{
+			"outcome": map[string]any{
+				"outcome":  "selected",
+				"optionId": optionID,
+			},
+		})
+	default:
+		c.respondToServer(*msg.ID, map[string]any{})
+	}
+}
+
+// respondToServer writes a JSON-RPC response to a server-initiated request.
+func (c *CopilotClient) respondToServer(id int64, result any) {
+	resultJSON, _ := json.Marshal(result)
+	resp := jsonRPCMessage{
+		JSONRPC: "2.0",
+		ID:      &id,
+		Result:  resultJSON,
+	}
+	data, _ := json.Marshal(resp)
+	data = append(data, '\n')
+	c.log("[ACP] → %s\n", string(data))
+
+	c.writeMu.Lock()
+	c.stdin.Write(data)
+	c.writeMu.Unlock()
 }
 
 // handleNotification processes ACP notifications (session/update events).
@@ -329,12 +394,12 @@ func (c *CopilotClient) resolveModel(tier string) string {
 
 // call sends a JSON-RPC request and waits for the response.
 func (c *CopilotClient) call(method string, params any) (json.RawMessage, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.callLocked(method, params)
+	return c.sendAndWait(method, params)
 }
 
-func (c *CopilotClient) callLocked(method string, params any) (json.RawMessage, error) {
+// sendAndWait marshals a JSON-RPC request, writes it under writeMu, and blocks
+// until the readLoop dispatches the matching response.
+func (c *CopilotClient) sendAndWait(method string, params any) (json.RawMessage, error) {
 	id := c.nextID.Add(1)
 	ch := make(chan *jsonRPCMessage, 1)
 	c.responses.Store(id, ch)
@@ -351,7 +416,10 @@ func (c *CopilotClient) callLocked(method string, params any) (json.RawMessage, 
 	data = append(data, '\n')
 
 	c.log("[ACP] → %s\n", string(data))
-	if _, err := c.stdin.Write(data); err != nil {
+	c.writeMu.Lock()
+	_, err := c.stdin.Write(data)
+	c.writeMu.Unlock()
+	if err != nil {
 		return nil, fmt.Errorf("write to acp: %w", err)
 	}
 

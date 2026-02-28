@@ -498,3 +498,68 @@ done
 		t.Errorf("ACP process started %s times, want 1 (process should be reused)", count)
 	}
 }
+
+// TestCopilotClient_PermissionAutoApprove verifies that server-initiated
+// session/request_permission requests are automatically approved.
+func TestCopilotClient_PermissionAutoApprove(t *testing.T) {
+	tmpDir := t.TempDir()
+	scriptPath := tmpDir + "/mock_acp.sh"
+	logPath := tmpDir + "/test.log"
+
+	// The mock sends a permission request during prompt, reads the approval,
+	// then completes with the tool output.
+	script := `#!/bin/bash
+while IFS= read -r line; do
+    method=$(echo "$line" | python3 -c "import json,sys; print(json.load(sys.stdin).get('method',''))" 2>/dev/null)
+    id=$(echo "$line" | python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
+
+    case "$method" in
+        initialize)
+            echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"protocolVersion\":1}}"
+            ;;
+        session/new)
+            echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"sessionId\":\"perm-session\"}}"
+            ;;
+        session/prompt)
+            # Send a tool call notification.
+            echo "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"perm-session\",\"update\":{\"sessionUpdate\":\"tool_call\",\"toolCallId\":\"tc1\",\"title\":\"List files\",\"kind\":\"execute\",\"status\":\"pending\"}}}"
+            # Send a permission request (server-initiated, id=0).
+            echo "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"session/request_permission\",\"params\":{\"sessionId\":\"perm-session\",\"toolCall\":{\"toolCallId\":\"tc1\",\"title\":\"List files\"},\"options\":[{\"optionId\":\"allow_once\",\"kind\":\"allow_once\"},{\"optionId\":\"allow_always\",\"kind\":\"allow_always\"},{\"optionId\":\"reject_once\",\"kind\":\"reject_once\"}]}}"
+            # Read the approval response from client.
+            IFS= read -r approval
+            option=$(echo "$approval" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('result',{}).get('outcome',{}).get('optionId',''))" 2>/dev/null)
+            # Send the result based on approval.
+            echo "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"perm-session\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"approved:$option\"}}}}"
+            echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"stopReason\":\"end_turn\"}}"
+            ;;
+        *)
+            echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}"
+            ;;
+    esac
+done
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not found")
+	}
+
+	c := &CopilotClient{binPath: scriptPath, logPath: logPath}
+
+	var chunks []string
+	fullResp, err := c.Run(RunOptions{
+		Prompt: "list files",
+		CWD:    tmpDir,
+	}, func(chunk string) {
+		chunks = append(chunks, chunk)
+	}, func(string) {})
+
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	if fullResp != "approved:allow_always" {
+		t.Errorf("want 'approved:allow_always', got %q", fullResp)
+	}
+}
