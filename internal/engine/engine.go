@@ -16,6 +16,8 @@ import (
 	"tenazas/internal/session"
 )
 
+const resumeSentinel = "Session resumed. Please continue from where you left off."
+
 type Engine struct {
 	Sm            *session.Manager
 	Clients       map[string]client.Client
@@ -126,7 +128,7 @@ func (e *Engine) initializeExecution(skill *models.SkillGraph, sess *models.Sess
 		e.Sm.Save(sess)
 		e.log(sess, events.AuditStatus, "engine", fmt.Sprintf("Started skill %s at node %s", skill.Name, sess.ActiveNode))
 	} else if sess.Status == models.StatusRunning && sess.PendingFeedback == "" {
-		sess.PendingFeedback = "Session resumed. Please continue from where you left off."
+		sess.PendingFeedback = resumeSentinel
 		e.Sm.Save(sess)
 	}
 }
@@ -313,6 +315,7 @@ func (e *Engine) handleRetry(state *models.StateDef, sess *models.Session, feedb
 
 func (e *Engine) handleLoopFailure(skill *models.SkillGraph, state *models.StateDef, sess *models.Session, exitCode int, output string) {
 	sess.LoopCount++
+	sess.RetryCount++
 
 	feedback := state.OnFailPrompt
 	if feedback == "" {
@@ -331,6 +334,9 @@ func (e *Engine) handleLoopFailure(skill *models.SkillGraph, state *models.State
 	if sess.LoopCount >= limit {
 		sess.PendingFeedback = feedback
 		sess.Status = models.StatusIntervention
+	} else if state.MaxRetries > 0 && sess.RetryCount < state.MaxRetries {
+		// Retry the same state with feedback before following fail_route
+		sess.PendingFeedback = feedback
 	} else {
 		e.transitionToFailRoute(skill, state, sess, feedback)
 	}
@@ -367,11 +373,11 @@ func (e *Engine) BuildPrompt(state *models.StateDef, sess *models.Session) strin
 		return instruction
 	}
 
-	if sess.PendingFeedback == "Session resumed. Please continue from where you left off." {
-		return sess.PendingFeedback
+	header := "### FEEDBACK FROM PREVIOUS ATTEMPT:"
+	if sess.PendingFeedback == resumeSentinel {
+		header = "### SESSION CONTEXT:"
 	}
-
-	return fmt.Sprintf("%s\n\n### FEEDBACK FROM PREVIOUS ATTEMPT:\n%s", instruction, sess.PendingFeedback)
+	return fmt.Sprintf("%s\n\n%s\n%s", instruction, header, sess.PendingFeedback)
 }
 
 func (e *Engine) OnChunk(sess *models.Session, state *models.StateDef) func(string) {

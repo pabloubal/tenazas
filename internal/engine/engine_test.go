@@ -279,6 +279,72 @@ func TestThoughtParser(t *testing.T) {
 	}
 }
 
+func TestBuildPromptResumeBranch(t *testing.T) {
+	storageDir, _ := os.MkdirTemp("", "tenazas-bp-resume-*")
+	defer os.RemoveAll(storageDir)
+
+	sm := session.NewManager(storageDir)
+	engine := NewEngine(sm, newTestClient("echo", storageDir), "gemini", 5)
+
+	state := &models.StateDef{Instruction: "Do the thing"}
+	sess := &models.Session{
+		ID:              "bp-resume",
+		CWD:             ".",
+		RoleCache:       make(map[string]string),
+		PendingFeedback: "Session resumed. Please continue from where you left off.",
+	}
+
+	result := engine.BuildPrompt(state, sess)
+	expected := "Do the thing\n\n### SESSION CONTEXT:\nSession resumed. Please continue from where you left off."
+	if result != expected {
+		t.Errorf("BuildPrompt resume branch:\n  got:  %q\n  want: %q", result, expected)
+	}
+}
+
+func TestBuildPromptEmptyFeedback(t *testing.T) {
+	storageDir, _ := os.MkdirTemp("", "tenazas-bp-empty-*")
+	defer os.RemoveAll(storageDir)
+
+	sm := session.NewManager(storageDir)
+	engine := NewEngine(sm, newTestClient("echo", storageDir), "gemini", 5)
+
+	state := &models.StateDef{Instruction: "Do the thing"}
+	sess := &models.Session{
+		ID:              "bp-empty",
+		CWD:             ".",
+		RoleCache:       make(map[string]string),
+		PendingFeedback: "",
+	}
+
+	result := engine.BuildPrompt(state, sess)
+	expected := "Do the thing"
+	if result != expected {
+		t.Errorf("BuildPrompt empty feedback:\n  got:  %q\n  want: %q", result, expected)
+	}
+}
+
+func TestBuildPromptNormalFeedback(t *testing.T) {
+	storageDir, _ := os.MkdirTemp("", "tenazas-bp-normal-*")
+	defer os.RemoveAll(storageDir)
+
+	sm := session.NewManager(storageDir)
+	engine := NewEngine(sm, newTestClient("echo", storageDir), "gemini", 5)
+
+	state := &models.StateDef{Instruction: "Do the thing"}
+	sess := &models.Session{
+		ID:              "bp-normal",
+		CWD:             ".",
+		RoleCache:       make(map[string]string),
+		PendingFeedback: "Error: file not found",
+	}
+
+	result := engine.BuildPrompt(state, sess)
+	expected := "Do the thing\n\n### FEEDBACK FROM PREVIOUS ATTEMPT:\nError: file not found"
+	if result != expected {
+		t.Errorf("BuildPrompt normal feedback:\n  got:  %q\n  want: %q", result, expected)
+	}
+}
+
 func TestEngineExecutePrompt(t *testing.T) {
 	storageDir, _ := os.MkdirTemp("", "tenazas-engine-prompt-*")
 	defer os.RemoveAll(storageDir)

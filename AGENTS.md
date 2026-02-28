@@ -161,11 +161,12 @@ Provides the terminal interface.
 - **Streaming**: Real-time `fmt.Print` of agent chunks.
 - **Banner**: Shows the active client name at startup (e.g., `[gemini]`, `[claude-code]`).
 - **Menu**: Interactive paginated list for session resumption.
-- **Immersive Mode**: Split-pane with thought drawer and footer bar.
+- **Immersive Mode**: Split-pane with thought drawer and footer bar. When a task is active, the footer displays a shimmer-animated intent indicator instead of the default keybindings.
 
 ### `internal/engine` (The Brain)
 Drives the skill execution loop using the `client.Client` interface for agent communication.
 - **RunOptions Construction**: Builds `RunOptions` per call with cascading overrides — model tier: `StateDef.ModelTier` > `Session.ModelTier`; budget: `SkillGraph.MaxBudgetUSD` > `Session.MaxBudgetUSD`.
+- **Prompt Construction**: `BuildPrompt()` assembles the final prompt from the state instruction and session context. On resume, the instruction is preserved alongside a `### SESSION CONTEXT:` header. For retry/feedback loops, the instruction is followed by a `### FEEDBACK FROM PREVIOUS ATTEMPT:` section containing prior output.
 - **Intervention System**: Pause/retry/abort for failed tool calls.
 - **Thought Parser**: Extracts chain-of-thought from streaming responses.
 - **Max Loops**: Configurable safety limit on autonomous iterations.

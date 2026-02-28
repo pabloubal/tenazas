@@ -201,7 +201,7 @@ func (c *CLI) writeInScrollRegion(content string) {
 		return
 	}
 	rows, _ := c.getTermSize()
-	scrollBottom := rows - 5
+	scrollBottom := rows - 6
 	if c.IsImmersive {
 		scrollBottom = rows - DrawerHeight - 6
 	}
@@ -209,28 +209,6 @@ func (c *CLI) writeInScrollRegion(content string) {
 		scrollBottom = 1
 	}
 	c.write(escSaveCursor + fmt.Sprintf(escMoveTo, scrollBottom) + content + escRestoreCursor)
-}
-
-// renderIntent redraws the shimmer intent line at the bottom of the scroll region.
-func (c *CLI) renderIntent() {
-	c.mu.Lock()
-	task := c.currentTask
-	frame := c.pulseFrame
-	c.mu.Unlock()
-	if task == "" {
-		return
-	}
-
-	taskText := "• " + task
-	_, cols := c.getTermSize()
-	maxLen := cols - MarginWidth - 2
-	taskRunes := []rune(taskText)
-	if len(taskRunes) > maxLen {
-		taskText = string(taskRunes[:maxLen-3]) + "..."
-	}
-	shimmer := shimmerText(taskText, frame)
-	// Overwrite the current line in the scroll region with the shimmer
-	c.writeInScrollRegion(escCR + escClearLine + Margin + shimmer)
 }
 
 func (c *CLI) drawBrandingAtomic(sb *strings.Builder) {
@@ -332,14 +310,15 @@ func (c *CLI) pulseLoop() {
 		c.mu.Lock()
 		hasTask := c.currentTask != ""
 		thinking := c.isThinking
+		sess := c.sess
 		if !thinking && !hasTask {
 			c.mu.Unlock()
 			continue
 		}
 		c.pulseFrame++
 		c.mu.Unlock()
-		if hasTask {
-			c.renderIntent()
+		if hasTask && sess != nil {
+			c.drawFooter(sess)
 		} else {
 			c.renderLine()
 		}
@@ -566,7 +545,7 @@ func (c *CLI) listenEvents(sessionID string) {
 				if !wasStreaming {
 					// Move cursor into scroll region before first chunk
 					rows, _ := c.getTermSize()
-					scrollEnd := rows - 5
+					scrollEnd := rows - 6
 					if c.IsImmersive {
 						scrollEnd = rows - DrawerHeight - 6
 					}
@@ -588,14 +567,12 @@ func (c *CLI) listenEvents(sessionID string) {
 
 			if audit.Type == events.AuditIntent {
 				c.mu.Lock()
-				prev := c.currentTask
 				c.currentTask = audit.Content
+				sess := c.sess
 				c.mu.Unlock()
-				if prev == "" {
-					// First intent — emit a newline to anchor the shimmer line
-					c.writeInScrollRegion("\n")
+				if sess != nil {
+					c.drawFooter(sess)
 				}
-				c.renderIntent()
 				continue
 			}
 
@@ -1069,7 +1046,7 @@ func (c *CLI) replRaw(sess *models.Session) error {
 
 			// Move cursor to end of scrolling region so output flows there
 			rows, _ := c.getTermSize()
-			scrollEnd := rows - 5
+			scrollEnd := rows - 6
 			if c.IsImmersive {
 				scrollEnd = rows - DrawerHeight - 6
 			}
@@ -1359,6 +1336,19 @@ func (c *CLI) drawFooterAtomic(sb *strings.Builder, sess *models.Session) {
 	if extra < 0 {
 		extra = 0
 	}
+	// Shimmer intent row (above footer line 1)
+	fmt.Fprintf(sb, escMoveTo, rows-5-extra)
+	sb.WriteString(escClearLine)
+	if c.currentTask != "" {
+		taskText := "• " + c.currentTask
+		maxLen := cols - MarginWidth - 2
+		taskRunes := []rune(taskText)
+		if len(taskRunes) > maxLen {
+			taskText = string(taskRunes[:maxLen-3]) + "..."
+		}
+		sb.WriteString(Margin)
+		sb.WriteString(shimmerText(taskText, c.pulseFrame))
+	}
 	// Footer line 1 (path/branch/client) shifts up with prompt
 	fmt.Fprintf(sb, escMoveTo, rows-4-extra)
 	sb.WriteString(escClearLine)
@@ -1518,7 +1508,7 @@ func (c *CLI) setupTerminalAtomic(sb *strings.Builder) {
 
 	// Clear old reserved rows to avoid ghost footers/drawers on resize.
 	if c.lastRows > 0 && c.lastRows != rows {
-		oldBottom := 5
+		oldBottom := 6
 		if c.IsImmersive {
 			oldBottom = DrawerHeight + 6
 		}
@@ -1531,7 +1521,7 @@ func (c *CLI) setupTerminalAtomic(sb *strings.Builder) {
 	}
 	c.lastRows = rows
 
-	bottomReserved := 5
+	bottomReserved := 6
 	if c.IsImmersive {
 		bottomReserved = DrawerHeight + 6
 	}

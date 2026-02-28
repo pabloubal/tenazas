@@ -38,7 +38,7 @@ func TestImmersive_SetupTerminalRegions(t *testing.T) {
 	// r2Imm should be r2Non - (DrawerHeight + 1)
 	// Because non-immersive reserves 1, immersive should reserve DrawerHeight + 2.
 	// Difference is DrawerHeight + 1 = 9.
-	expectedDiff := DrawerHeight + 1
+	expectedDiff := DrawerHeight
 	actualDiff := r2Non - r2Imm
 
 	if actualDiff != expectedDiff {

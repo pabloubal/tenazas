@@ -7,6 +7,11 @@ import (
 	"tenazas/internal/events"
 )
 
+// isCommandFailure reports whether an audit entry represents a failed command.
+func isCommandFailure(e events.AuditEntry) bool {
+	return e.ExitCode != 0
+}
+
 // AnsiFormatter renders audit entries for terminal output.
 type AnsiFormatter struct{}
 
@@ -21,11 +26,11 @@ func (f *AnsiFormatter) Format(e events.AuditEntry) string {
 	case events.AuditLLMThought:
 		return fmt.Sprintf("\x1b[2m  %s\x1b[0m", e.Content)
 	case events.AuditCmdResult:
-		color, icon := "\x1b[32m", "●"
-		if !strings.Contains(e.Content, "Exit Code: 0") {
-			color, icon = "\x1b[31m", "●"
+		color := "\x1b[32m"
+		if isCommandFailure(e) {
+			color = "\x1b[31m"
 		}
-		return fmt.Sprintf("%s%s Command Result\x1b[0m\n\x1b[2m  └ %s\x1b[0m", color, icon, e.Content)
+		return fmt.Sprintf("%s● Command Result\x1b[0m\n\x1b[2m  └ %s\x1b[0m", color, e.Content)
 	case events.AuditIntervention:
 		return fmt.Sprintf("\x1b[31;1m● Intervention Required\x1b[0m\n  %s", e.Content)
 	case events.AuditStatus:
@@ -52,7 +57,7 @@ func (f *HtmlFormatter) Format(e events.AuditEntry) string {
 		return "🟢 <b>RESPONSE:</b>\n" + content
 	case events.AuditCmdResult:
 		icon := "✅"
-		if !strings.Contains(e.Content, "Exit Code: 0") {
+		if isCommandFailure(e) {
 			icon = "❌"
 		}
 		return icon + " <b>COMMAND RESULT:</b>\n<pre>" + content + "</pre>"

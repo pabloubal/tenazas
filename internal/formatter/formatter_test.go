@@ -26,8 +26,9 @@ func TestAnsiFormatter(t *testing.T) {
 
 	t.Run("FailureCmdResult", func(t *testing.T) {
 		e := events.AuditEntry{
-			Type:    events.AuditCmdResult,
-			Content: "Verification Result (Exit Code: 1):\x0aError!",
+			Type:     events.AuditCmdResult,
+			Content:  "Verification Result (Exit Code: 1):\x0aError!",
+			ExitCode: 1,
 		}
 		out := f.Format(e)
 		if !strings.Contains(out, "● Command Result") {
@@ -56,8 +57,9 @@ func TestHtmlFormatter(t *testing.T) {
 
 	t.Run("FailureCmdResult", func(t *testing.T) {
 		e := events.AuditEntry{
-			Type:    events.AuditCmdResult,
-			Content: "Exit Code: 127\x0aOutput: command not found",
+			Type:     events.AuditCmdResult,
+			Content:  "Exit Code: 127\x0aOutput: command not found",
+			ExitCode: 127,
 		}
 		out := f.Format(e)
 		if !strings.Contains(out, "❌") {
