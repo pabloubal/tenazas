@@ -63,7 +63,8 @@ func TestImmersive_PromptPositioning(t *testing.T) {
 	if err != nil {
 		rows = 24
 	}
-	expectedRow := rows - DrawerHeight - 2
+	// rows - 2 (prompt is always at rows-2 in the box layout)
+	expectedRow := rows - 2
 	expectedMove := fmt.Sprintf("\x1b[%d;1H", expectedRow)
 
 	if !strings.Contains(output, expectedMove) {
@@ -88,8 +89,8 @@ func TestImmersive_DrawerBoundary(t *testing.T) {
 		rows = 24
 	}
 
-	// First thought should be at rows - DrawerHeight (e.g. 24 - 8 = 16)
-	expectedRow := rows - DrawerHeight
+	// First thought should be at rows - DrawerHeight - 4 (drawer sits above footer line 1)
+	expectedRow := rows - DrawerHeight - 4
 	expectedMove := fmt.Sprintf("\x1b[%d;1H", expectedRow)
 
 	if !strings.Contains(output, expectedMove) {

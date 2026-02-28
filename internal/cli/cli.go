@@ -50,6 +50,7 @@ type CLI struct {
 	lastRows         int // tracks terminal rows for resize cleanup
 	gitBranch        string
 	lastRenderLines  int // tracks how many terminal rows the last input render occupied
+	promptLines      int // current number of wrapped prompt lines (for footer positioning)
 	lastEscTime      time.Time
 }
 
@@ -105,6 +106,8 @@ const (
 	escBlueWhite     = "\x1b[44;37m"
 	escCyan          = "\x1b[36m"
 	escBoldCyan      = "\x1b[1;36m"
+	escGreen         = "\x1b[32m"
+	escGray          = "\x1b[90m"
 	escDim           = "\x1b[2m"
 	escHideCursor    = "\x1b[?25l"
 	escShowCursor    = "\x1b[?25h"
@@ -619,23 +622,11 @@ func (c *CLI) updateCompletionsLocked() {
 }
 
 func (c *CLI) renderLineAtomic(sb *strings.Builder) {
-	_, cols := c.getTermSize()
-	if c.IsImmersive {
-		rows, _ := c.getTermSize()
-		fmt.Fprintf(sb, escMoveTo, c.promptRow(rows))
-	} else {
-		// Move cursor back to the first row of the previous render
-		if c.lastRenderLines > 1 {
-			fmt.Fprintf(sb, "\x1b[%dA", c.lastRenderLines-1)
-		}
-	}
+	rows, cols := c.getTermSize()
+	promptRow := c.promptRow(rows)
 
 	prompt := Margin + c.getPrompt()
 	prefixLen := MarginWidth + PromptOffset
-
-	if c.isThinking {
-		sb.WriteString(escCyan)
-	}
 
 	line := string(c.input)
 
@@ -652,12 +643,32 @@ func (c *CLI) renderLineAtomic(sb *strings.Builder) {
 
 	// Wrap the input text
 	wrappedLines := wrapText(line, availWidth)
+	currentLines := len(wrappedLines)
+	if currentLines < 1 {
+		currentLines = 1
+	}
 
 	continuationIndent := strings.Repeat(" ", prefixLen)
 
-	// Write first line with prompt
-	sb.WriteString(escCR)
-	sb.WriteString(escClearToEOL)
+	// Prompt grows upward: last line stays at promptRow (rows-2)
+	startRow := promptRow - (currentLines - 1)
+
+	// Clear leftover rows above from a previous longer render
+	prevStartRow := promptRow - (c.lastRenderLines - 1)
+	if c.lastRenderLines > currentLines && prevStartRow < startRow {
+		for r := prevStartRow; r < startRow; r++ {
+			fmt.Fprintf(sb, escMoveTo, r)
+			sb.WriteString(escClearLine)
+		}
+	}
+
+	if c.isThinking {
+		sb.WriteString(escCyan)
+	}
+
+	// Write first line with prompt at startRow
+	fmt.Fprintf(sb, escMoveTo, startRow)
+	sb.WriteString(escClearLine)
 	if len(wrappedLines) == 0 {
 		sb.WriteString(prompt)
 	} else {
@@ -676,43 +687,21 @@ func (c *CLI) renderLineAtomic(sb *strings.Builder) {
 
 	sb.WriteString(escClearToEOL)
 
-	// Write continuation lines
+	// Write continuation lines downward from startRow
 	for i := 1; i < len(wrappedLines); i++ {
-		sb.WriteString("\n")
-		sb.WriteString(escCR)
-		sb.WriteString(escClearToEOL)
+		fmt.Fprintf(sb, escMoveTo, startRow+i)
+		sb.WriteString(escClearLine)
 		sb.WriteString(continuationIndent)
 		sb.WriteString(wrappedLines[i])
-		sb.WriteString(escClearToEOL)
-	}
-
-	// Clear any leftover rows from a previous longer render
-	currentLines := len(wrappedLines)
-	if currentLines < 1 {
-		currentLines = 1
-	}
-	prevRenderLines := c.lastRenderLines
-	for i := currentLines; i < prevRenderLines; i++ {
-		sb.WriteString("\n")
-		sb.WriteString(escCR)
-		sb.WriteString(escClearToEOL)
 	}
 
 	// Track how many lines this render used
 	c.lastRenderLines = currentLines
+	c.promptLines = currentLines
 
-	// Move cursor back to the correct position
-	// We're now at the last row written; figure out total rows we moved through
-	totalLinesWritten := currentLines
-	if prevRenderLines > currentLines {
-		totalLinesWritten = prevRenderLines
-	}
-	// We're now at the last row written; move up to the cursor's line
+	// Move cursor to the correct position within the wrapped text
 	cursorLine, cursorCol := c.cursorPosition(wrappedLines, availWidth)
-	linesFromBottom := totalLinesWritten - 1 - cursorLine
-	if linesFromBottom > 0 {
-		fmt.Fprintf(sb, "\x1b[%dA", linesFromBottom)
-	}
+	fmt.Fprintf(sb, escMoveTo, startRow+cursorLine)
 	fmt.Fprintf(sb, escCR+escMoveRight, cursorCol+prefixLen)
 }
 
@@ -830,24 +819,21 @@ func (c *CLI) replRaw(sess *models.Session) error {
 			line := string(c.input)
 			c.input = nil
 			c.cursorPos = 0
-			// Move to the last rendered line before writing newline
-			if c.lastRenderLines > 1 {
-				_, cols := c.getTermSize()
-				availWidth := cols - MarginWidth - PromptOffset
-				if availWidth < 10 {
-					availWidth = 10
-				}
-				cursorLine, _ := c.cursorPosition(wrapText(line, availWidth), availWidth)
-				linesDown := c.lastRenderLines - 1 - cursorLine
-				if linesDown > 0 {
-					c.writeLocked(fmt.Sprintf("\x1b[%dB", linesDown))
-				}
-			}
 			c.lastRenderLines = 0
+			c.promptLines = 0
 			c.resetCompletionsLocked()
 			c.mu.Unlock()
 
-			c.write("\n")
+			// Move cursor to end of scrolling region so output flows there
+			rows, _ := c.getTermSize()
+			scrollEnd := rows - 5
+			if c.IsImmersive {
+				scrollEnd = rows - DrawerHeight - 6
+			}
+			if scrollEnd < 1 {
+				scrollEnd = 1
+			}
+			c.write(fmt.Sprintf(escMoveTo, scrollEnd) + "\n")
 			if line != "" {
 				c.handleCommand(sess, line)
 			}
@@ -977,6 +963,19 @@ func FormatFooterLine1(d FooterData, cols int) string {
 	return left + strings.Repeat(" ", gap) + right
 }
 
+// ModeColor returns the ANSI color escape for the current approval mode.
+func ModeColor(mode string, yolo bool) string {
+	if yolo {
+		return escGreen
+	}
+	switch mode {
+	case models.ApprovalModePlan:
+		return escCyan
+	default:
+		return escGray
+	}
+}
+
 // FormatFooterLine2 returns the second footer line: keybinding hints left, skills right.
 func FormatFooterLine2(d FooterData, cols int) string {
 	displayMode := d.Mode
@@ -1077,13 +1076,32 @@ func (c *CLI) drawFooterAtomic(sb *strings.Builder, sess *models.Session) {
 	line2 := FormatFooterLine2(d, cols)
 
 	sb.WriteString(escSaveCursor)
-	// Line 1 (second-to-last row)
-	fmt.Fprintf(sb, escMoveTo, rows-1)
+	color := ModeColor(sess.ApprovalMode, sess.Yolo)
+	// Extra lines from multi-line prompt (grows upward)
+	extra := c.promptLines - 1
+	if extra < 0 {
+		extra = 0
+	}
+	// Footer line 1 (path/branch/client) shifts up with prompt
+	fmt.Fprintf(sb, escMoveTo, rows-4-extra)
 	sb.WriteString(escClearLine)
 	sb.WriteString(escBlueWhite)
 	fmt.Fprintf(sb, "%-*s", cols, line1)
 	sb.WriteString(escReset)
-	// Line 2 (last row)
+	// Top separator shifts up with prompt
+	fmt.Fprintf(sb, escMoveTo, rows-3-extra)
+	sb.WriteString(escClearLine)
+	sb.WriteString(color)
+	sb.WriteString(strings.Repeat("─", cols))
+	sb.WriteString(escReset)
+	// Prompt area (rows-2-extra to rows-2) is handled by renderLineAtomic
+	// Bottom separator at rows-1 (fixed)
+	fmt.Fprintf(sb, escMoveTo, rows-1)
+	sb.WriteString(escClearLine)
+	sb.WriteString(color)
+	sb.WriteString(strings.Repeat("─", cols))
+	sb.WriteString(escReset)
+	// Footer line 2 (keybindings/skills) at rows (fixed)
 	fmt.Fprintf(sb, escMoveTo, rows)
 	sb.WriteString(escClearLine)
 	sb.WriteString(escDim)
@@ -1211,11 +1229,11 @@ func (c *CLI) getTermSize() (int, int) {
 }
 
 func (c *CLI) drawerStartRow(rows int) int {
-	return rows - DrawerHeight - 1
+	return rows - DrawerHeight - 4
 }
 
 func (c *CLI) promptRow(rows int) int {
-	return rows - DrawerHeight - 2
+	return rows - 2
 }
 
 func (c *CLI) setupTerminalAtomic(sb *strings.Builder) {
@@ -1223,9 +1241,9 @@ func (c *CLI) setupTerminalAtomic(sb *strings.Builder) {
 
 	// Clear old reserved rows to avoid ghost footers/drawers on resize.
 	if c.lastRows > 0 && c.lastRows != rows {
-		oldBottom := 2
+		oldBottom := 5
 		if c.IsImmersive {
-			oldBottom = DrawerHeight + 3
+			oldBottom = DrawerHeight + 6
 		}
 		for r := c.lastRows - oldBottom; r <= c.lastRows; r++ {
 			if r > 0 {
@@ -1236,9 +1254,9 @@ func (c *CLI) setupTerminalAtomic(sb *strings.Builder) {
 	}
 	c.lastRows = rows
 
-	bottomReserved := 2
+	bottomReserved := 5
 	if c.IsImmersive {
-		bottomReserved = DrawerHeight + 3
+		bottomReserved = DrawerHeight + 6
 	}
 
 	fmt.Fprintf(sb, escScrollRegion, 1, rows-bottomReserved)
