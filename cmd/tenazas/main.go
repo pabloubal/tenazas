@@ -78,13 +78,16 @@ func main() {
 		os.Exit(handleRunCommand(sm, eng, cfg, flag.Arg(1)))
 	}
 
-	var tg *telegram.Telegram
 	if *daemon {
+		var tg *telegram.Telegram
 		if cfg.Channel.Type == "telegram" {
 			tg = setupTelegram(cfg, sm, reg, eng)
 		}
 		hb := heartbeat.NewRunner(cfg.StorageDir, sm, eng, tg)
 		go hb.CheckAndRun()
+		fmt.Println("Daemon started. Press Ctrl+C to stop.")
+		handleSignals()
+		select {} // block forever
 	}
 
 	handleSignals()
