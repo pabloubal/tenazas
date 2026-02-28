@@ -70,13 +70,13 @@ func TestGetCompletions(t *testing.T) {
 		input    string
 		expected []string
 	}{
-		{"/", []string{"/run", "/last", "/intervene", "/skills", "/mode", "/tier", "/budget", "/help"}},
+		{"/", []string{"/run", "/last", "/intervene", "/skills", "/mode", "/tier", "/budget", "/tasks", "/task", "/help"}},
 		{"/r", []string{"/run"}},
 		{"/l", []string{"/last"}},
 		{"/i", []string{"/intervene"}},
 		{"/s", []string{"/skills"}},
 		{"/m", []string{"/mode"}},
-		{"/t", []string{"/tier"}},
+		{"/t", []string{"/tier", "/tasks", "/task"}},
 		{"/b", []string{"/budget"}},
 		{"/h", []string{"/help"}},
 		{"/notfound", []string{}},

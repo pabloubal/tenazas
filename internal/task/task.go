@@ -44,6 +44,12 @@ type Task struct {
 	FilePath        string     `json:"-"`
 }
 
+// NormalizeTaskID converts user input into canonical TSK-XXXXXX format.
+// Examples: "6" → "TSK-000006", "tsk-6" → "TSK-6", "TSK-000006" → "TSK-000006"
+func NormalizeTaskID(input string) string {
+	return normalizeTaskID(input)
+}
+
 // ClearOwnership resets all owner fields after a task is completed or blocked.
 func (t *Task) ClearOwnership() {
 	t.OwnerPID = 0

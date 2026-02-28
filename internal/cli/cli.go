@@ -632,7 +632,19 @@ func (c *CLI) getCompletions(line string) []string {
 		return []string{}
 	}
 
-	commands := []string{"/run", "/last", "/intervene", "/skills", "/mode", "/tier", "/budget", "/help"}
+	commands := []string{"/run", "/last", "/intervene", "/skills", "/mode", "/tier", "/budget", "/tasks", "/task", "/help"}
+
+	if strings.HasPrefix(line, "/task ") {
+		prefix := strings.TrimPrefix(line, "/task ")
+		subs := []string{"show", "next", "complete", "add", "unblock"}
+		matches := []string{}
+		for _, s := range subs {
+			if strings.HasPrefix(s, prefix) {
+				matches = append(matches, "/task "+s)
+			}
+		}
+		return matches
+	}
 
 	if strings.HasPrefix(line, "/run ") {
 		prefix := strings.TrimPrefix(line, "/run ")
@@ -972,6 +984,10 @@ func (c *CLI) handleCommand(sess *models.Session, text string) {
 		c.handleTier(sess, parts[1:])
 	case "/budget":
 		c.handleBudget(sess, parts[1:])
+	case "/tasks":
+		c.handleTasks()
+	case "/task":
+		c.handleTask(sess, parts[1:])
 	case "/help":
 		c.handleHelp()
 	default:
@@ -1329,6 +1345,12 @@ func (c *CLI) handleHelp() {
 	fmt.Fprintln(&output, "  /mode <mode>         Switch approval mode (plan, auto_edit, yolo)")
 	fmt.Fprintln(&output, "  /tier <tier>         Switch model tier (high, medium, low)")
 	fmt.Fprintln(&output, "  /budget <amount>     Set session budget cap (0 = unlimited)")
+	fmt.Fprintln(&output, "  /tasks                List all tasks for this session")
+	fmt.Fprintln(&output, "  /task show <id>       Show task details")
+	fmt.Fprintln(&output, "  /task next            Pick up the next ready task")
+	fmt.Fprintln(&output, "  /task complete        Mark the active task as done")
+	fmt.Fprintln(&output, "  /task add <t> <desc>  Create a new task")
+	fmt.Fprintln(&output, "  /task unblock <id>    Unblock a blocked task")
 	fmt.Fprintln(&output, "  /help                Show this help")
 	fmt.Fprintln(&output, "\nModes: plan, auto_edit, yolo")
 	c.write(output.String())
