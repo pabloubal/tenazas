@@ -28,7 +28,7 @@
       "approval_mode": "yolo",
       "verify_cmd": "test -f implementation-plan.md",
       "max_retries": 2,
-      "on_fail_prompt": "Verification failed: You did not create the 'implementation-plan.md' file. Please write the plan to disk.",
+      "on_fail_prompt": "Verification failed: You did not create the 'implementation-plan.md' file. Please, remember that to successfully complete this step, you need to write the plan to the file 'implementation-plan.md' in the current working directory.",
       "on_fail_route": "escalate_to_human",
       "next": "step_2_red_phase"
     },
