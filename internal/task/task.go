@@ -38,6 +38,8 @@ type Task struct {
 	OwnerSessionID  string     `json:"owner_session_id,omitempty"`
 	StartedAt       *time.Time `json:"started_at,omitempty"`
 	CompletedAt     *time.Time `json:"completed_at,omitempty"`
+	Skill           string     `json:"skill,omitempty"`
+	Labels          []string   `json:"labels,omitempty"`
 	Content         string     `json:"-"`
 	FilePath        string     `json:"-"`
 }
@@ -165,9 +167,113 @@ func parseSimpleKV(lines []string) *Task {
 			} else {
 				t.BlockedBy = list
 			}
+		case "skill":
+			t.Skill = v
+		case "labels":
+			t.Labels = parseList(v)
 		}
 	}
 	return t
+}
+
+// allowedTransitions defines the valid status state machine.
+var allowedTransitions = map[string][]string{
+	StatusTodo:       {StatusInProgress, StatusBlocked, StatusDone},
+	StatusInProgress: {StatusDone, StatusBlocked, StatusTodo},
+	StatusBlocked:    {StatusTodo, StatusInProgress},
+	StatusDone:       {StatusTodo},
+}
+
+// ValidateStatusTransition returns an error if moving from `from` to `to` is not allowed.
+func ValidateStatusTransition(from, to string) error {
+	targets, ok := allowedTransitions[from]
+	if !ok {
+		return fmt.Errorf("unknown status: %s", from)
+	}
+	if !sliceContains(targets, to) {
+		return fmt.Errorf("invalid transition: %s → %s", from, to)
+	}
+	return nil
+}
+
+// AddDependency adds depID to task.BlockedBy and the reverse Blocks edge.
+// It is idempotent and performs cycle detection.
+func AddDependency(tasksDir string, task *Task, depID string) error {
+	if depID == task.ID {
+		return fmt.Errorf("cannot add self-dependency")
+	}
+	if sliceContains(task.BlockedBy, depID) {
+		return nil // idempotent
+	}
+	dep, err := FindTask(tasksDir, depID)
+	if err != nil {
+		return fmt.Errorf("dependency %s not found", depID)
+	}
+
+	// Tentatively add edges; rollback undoes both on failure.
+	task.BlockedBy = append(task.BlockedBy, depID)
+	dep.Blocks = append(dep.Blocks, task.ID)
+	rollback := func() {
+		task.BlockedBy = removeFromSlice(task.BlockedBy, depID)
+		dep.Blocks = removeFromSlice(dep.Blocks, task.ID)
+	}
+
+	allTasks, err := ListTasks(tasksDir)
+	if err != nil {
+		rollback()
+		return err
+	}
+	for i, t := range allTasks {
+		if t.ID == task.ID {
+			allTasks[i] = task
+		} else if t.ID == dep.ID {
+			allTasks[i] = dep
+		}
+	}
+	if HasCycle(allTasks) {
+		rollback()
+		return fmt.Errorf("adding dependency %s → %s would create a cycle", task.ID, depID)
+	}
+
+	if err := WriteTask(task.FilePath, task); err != nil {
+		return err
+	}
+	return WriteTask(dep.FilePath, dep)
+}
+
+// RemoveDependency removes depID from task.BlockedBy and the reverse Blocks edge.
+// Idempotent — no error if the edge doesn't exist.
+func RemoveDependency(tasksDir string, task *Task, depID string) error {
+	task.BlockedBy = removeFromSlice(task.BlockedBy, depID)
+	if err := WriteTask(task.FilePath, task); err != nil {
+		return err
+	}
+
+	dep, err := FindTask(tasksDir, depID)
+	if err != nil {
+		return nil // dep task missing, local side already cleaned
+	}
+	dep.Blocks = removeFromSlice(dep.Blocks, task.ID)
+	return WriteTask(dep.FilePath, dep)
+}
+
+func sliceContains(slice []string, val string) bool {
+	for _, s := range slice {
+		if s == val {
+			return true
+		}
+	}
+	return false
+}
+
+func removeFromSlice(slice []string, val string) []string {
+	var result []string
+	for _, s := range slice {
+		if s != val {
+			result = append(result, s)
+		}
+	}
+	return result
 }
 
 func parseList(val string) []string {

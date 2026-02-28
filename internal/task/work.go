@@ -37,6 +37,16 @@ func HandleWorkCommand(storageDir string, args []string) {
 		handleWorkList(tasksDir)
 	case "show":
 		handleWorkShow(tasksDir, args[1:])
+	case "edit":
+		handleWorkEdit(tasksDir, args[1:])
+	case "delete":
+		handleWorkDelete(tasksDir, args[1:])
+	case "dep":
+		handleWorkDep(tasksDir, args[1:])
+	case "unblock":
+		handleWorkUnblock(tasksDir, args[1:])
+	case "reset":
+		handleWorkReset(tasksDir, args[1:])
 	default:
 		fmt.Printf("Unknown command: %s\n", cmd)
 		os.Exit(1)
@@ -241,4 +251,224 @@ func normalizeTaskID(input string) string {
 		return fmt.Sprintf("%s%06d", taskIDPrefix, n)
 	}
 	return s
+}
+
+// findTaskOrDie normalizes rawID, loads the task, and exits on error.
+func findTaskOrDie(tasksDir, rawID string) (string, *Task) {
+	id := normalizeTaskID(rawID)
+	task, err := FindTask(tasksDir, id)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	return id, task
+}
+
+// writeTaskOrDie persists the task and exits on error.
+func writeTaskOrDie(task *Task) {
+	if err := WriteTask(task.FilePath, task); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// nextFlagValue consumes the next argument as a flag value, advancing *i.
+// Exits with an error if no value follows the flag.
+func nextFlagValue(flags []string, i *int, name string) string {
+	if *i+1 >= len(flags) {
+		fmt.Fprintf(os.Stderr, "Error: %s requires a value\n", name)
+		os.Exit(1)
+	}
+	*i++
+	return flags[*i]
+}
+
+// parseCSVLabels splits a comma-separated string into trimmed, non-empty labels.
+func parseCSVLabels(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	var labels []string
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			labels = append(labels, p)
+		}
+	}
+	return labels
+}
+
+func handleWorkEdit(tasksDir string, args []string) {
+	const usage = "Usage: tenazas work edit <id> [--title <str>] [--status <str>] [--priority <int>] [--skill <str>] [--labels <csv>]"
+	if len(args) < 2 {
+		fmt.Fprintln(os.Stderr, usage)
+		os.Exit(1)
+	}
+
+	id, task := findTaskOrDie(tasksDir, args[0])
+
+	flags := args[1:]
+	hasFlag := false
+	for i := 0; i < len(flags); i++ {
+		switch flags[i] {
+		case "--title":
+			task.Title = nextFlagValue(flags, &i, "--title")
+			hasFlag = true
+		case "--status":
+			newStatus := nextFlagValue(flags, &i, "--status")
+			if err := ValidateStatusTransition(task.Status, newStatus); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			task.Status = newStatus
+			if newStatus == StatusDone {
+				now := time.Now().Truncate(time.Second)
+				task.CompletedAt = &now
+				task.ClearOwnership()
+			}
+			if newStatus == StatusInProgress {
+				if task.StartedAt == nil {
+					now := time.Now().Truncate(time.Second)
+					task.StartedAt = &now
+				}
+				task.OwnerPID = os.Getpid()
+			}
+			hasFlag = true
+		case "--priority":
+			raw := nextFlagValue(flags, &i, "--priority")
+			p, err := strconv.Atoi(raw)
+			if err != nil || p < 0 {
+				fmt.Fprintln(os.Stderr, "Error: --priority must be a non-negative integer")
+				os.Exit(1)
+			}
+			task.Priority = p
+			hasFlag = true
+		case "--skill":
+			task.Skill = nextFlagValue(flags, &i, "--skill")
+			hasFlag = true
+		case "--labels":
+			task.Labels = parseCSVLabels(nextFlagValue(flags, &i, "--labels"))
+			hasFlag = true
+		}
+	}
+
+	if !hasFlag {
+		fmt.Fprintln(os.Stderr, usage)
+		os.Exit(1)
+	}
+
+	writeTaskOrDie(task)
+	fmt.Printf("Updated: %s\n", id)
+}
+
+func handleWorkDelete(tasksDir string, args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "Usage: tenazas work delete <id>")
+		os.Exit(1)
+	}
+
+	id := normalizeTaskID(args[0])
+	tasks := listTasksOrDie(tasksDir)
+	taskMap := buildTaskMap(tasks)
+
+	target, ok := taskMap[id]
+	if !ok {
+		fmt.Fprintf(os.Stderr, "Error: task %s not found\n", id)
+		os.Exit(1)
+	}
+
+	// Safety: reject if target blocks any non-done task
+	for _, tk := range tasks {
+		if tk.ID == id {
+			continue
+		}
+		if sliceContains(tk.BlockedBy, id) && tk.Status != StatusDone {
+			fmt.Fprintf(os.Stderr, "Error: cannot delete %s — it blocks active task %s (%s)\n", id, tk.ID, tk.Status)
+			os.Exit(1)
+		}
+	}
+
+	// Clean up cross-references in other tasks
+	for _, tk := range tasks {
+		if tk.ID == id {
+			continue
+		}
+		origBlockedBy, origBlocks := len(tk.BlockedBy), len(tk.Blocks)
+		tk.BlockedBy = removeFromSlice(tk.BlockedBy, id)
+		tk.Blocks = removeFromSlice(tk.Blocks, id)
+		if len(tk.BlockedBy) != origBlockedBy || len(tk.Blocks) != origBlocks {
+			WriteTask(tk.FilePath, tk)
+		}
+	}
+
+	os.Remove(target.FilePath)
+	fmt.Printf("Deleted: %s\n", id)
+}
+
+func handleWorkDep(tasksDir string, args []string) {
+	if len(args) < 3 {
+		fmt.Fprintln(os.Stderr, "Usage: tenazas work dep [add|remove] <id> <dep-id>")
+		os.Exit(1)
+	}
+
+	action := args[0]
+	id, task := findTaskOrDie(tasksDir, args[1])
+	depID := normalizeTaskID(args[2])
+
+	switch action {
+	case "add":
+		if err := AddDependency(tasksDir, task, depID); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Dependency updated: %s ← %s\n", id, depID)
+	case "remove":
+		if err := RemoveDependency(tasksDir, task, depID); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Dependency removed: %s ← %s\n", id, depID)
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown dep action: %s\n", action)
+		os.Exit(1)
+	}
+}
+
+func handleWorkUnblock(tasksDir string, args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "Usage: tenazas work unblock <id>")
+		os.Exit(1)
+	}
+
+	id, task := findTaskOrDie(tasksDir, args[0])
+
+	if task.Status != StatusBlocked {
+		fmt.Fprintf(os.Stderr, "Error: task %s is not blocked (current: %s)\n", id, task.Status)
+		os.Exit(1)
+	}
+
+	task.Status = StatusTodo
+	task.ClearOwnership()
+	task.FailureCount = 0
+
+	writeTaskOrDie(task)
+	fmt.Printf("Unblocked: %s\n", id)
+}
+
+func handleWorkReset(tasksDir string, args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "Usage: tenazas work reset <id>")
+		os.Exit(1)
+	}
+
+	id, task := findTaskOrDie(tasksDir, args[0])
+
+	task.Status = StatusTodo
+	task.ClearOwnership()
+	task.FailureCount = 0
+	task.StartedAt = nil
+	task.CompletedAt = nil
+
+	writeTaskOrDie(task)
+	fmt.Printf("Reset: %s\n", id)
 }
