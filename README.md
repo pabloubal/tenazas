@@ -166,6 +166,9 @@ tenazas work add --priority 5 "Title" "Description"        # Add a high-priority
 tenazas work next                                          # Pick the next ready task
 tenazas work complete                                      # Mark current task as done
 tenazas work status                                        # Show queue status summary
+tenazas work list                                          # List all tasks in a table
+tenazas work show TSK-000001                               # Show full detail for a task
+tenazas work show 1                                        # Same (bare numbers are normalized)
 ```
 
 Tasks are selected by **priority** (highest first). Tasks with equal priority are picked in **FIFO** order (oldest `created_at` first). A priority of `0` is the default and lowest.

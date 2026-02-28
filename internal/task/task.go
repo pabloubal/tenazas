@@ -338,6 +338,15 @@ func ListTasks(dir string) ([]*Task, error) {
 	return tasks, err
 }
 
+func FindTask(dir string, id string) (*Task, error) {
+	path := filepath.Join(dir, id+".md")
+	t, err := ReadTask(path)
+	if err != nil {
+		return nil, fmt.Errorf("task %s not found", id)
+	}
+	return t, nil
+}
+
 func MigrateTasks(tasksDir string) error {
 	var files []string
 	err := filepath.Walk(tasksDir, func(path string, info os.FileInfo, err error) error {

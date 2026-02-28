@@ -5,14 +5,17 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"tenazas/internal/storage"
 )
 
+const taskIDPrefix = "TSK-"
+
 func HandleWorkCommand(storageDir string, args []string) {
 	if len(args) < 1 {
-		fmt.Println("Usage: tenazas work [init|add|next|complete|status]")
+		fmt.Println("Usage: tenazas work [init|add|next|complete|status|list|show]")
 		os.Exit(1)
 	}
 
@@ -30,6 +33,10 @@ func HandleWorkCommand(storageDir string, args []string) {
 		handleWorkComplete(tasksDir)
 	case "status":
 		handleWorkStatus(tasksDir)
+	case "list":
+		handleWorkList(tasksDir)
+	case "show":
+		handleWorkShow(tasksDir, args[1:])
 	default:
 		fmt.Printf("Unknown command: %s\n", cmd)
 		os.Exit(1)
@@ -49,7 +56,7 @@ func handleWorkInit(tasksDir string) {
 		return
 	}
 
-	printStatusSummary(tasks)
+	printStatusSummaryTo(os.Stdout, tasks)
 }
 
 // extractPriorityFlag separates --priority <int> from positional args.
@@ -154,7 +161,7 @@ func handleWorkComplete(tasksDir string) {
 }
 
 func handleWorkStatus(tasksDir string) {
-	printStatusSummary(listTasksOrDie(tasksDir))
+	printStatusSummaryTo(os.Stdout, listTasksOrDie(tasksDir))
 }
 
 func findInProgress(tasks []*Task) *Task {
@@ -173,15 +180,6 @@ func listTasksOrDie(tasksDir string) []*Task {
 		os.Exit(1)
 	}
 	return tasks
-}
-
-func printStatusSummary(tasks []*Task) {
-	counts := make(map[string]int)
-	for _, t := range tasks {
-		counts[t.Status]++
-	}
-	fmt.Printf("Todo: %d | In-Progress: %d | Done: %d | Blocked: %d\n",
-		counts[StatusTodo], counts[StatusInProgress], counts[StatusDone], counts[StatusBlocked])
 }
 
 func updateAndPrintTask(t *Task) {
@@ -210,4 +208,37 @@ func GetTasksDir(storageDir string) string {
 		os.Exit(1)
 	}
 	return tasksDir
+}
+
+func handleWorkList(tasksDir string) {
+	tasks := listTasksOrDie(tasksDir)
+	RenderList(os.Stdout, tasks)
+}
+
+func handleWorkShow(tasksDir string, args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "Usage: tenazas work show <task-id>")
+		os.Exit(1)
+	}
+	id := normalizeTaskID(args[0])
+	allTasks := listTasksOrDie(tasksDir)
+	taskMap := buildTaskMap(allTasks)
+	task, ok := taskMap[id]
+	if !ok {
+		fmt.Fprintf(os.Stderr, "Error: Task %s not found\n", id)
+		os.Exit(1)
+	}
+	RenderShow(os.Stdout, task, taskMap)
+}
+
+func normalizeTaskID(input string) string {
+	s := strings.TrimSpace(input)
+	upper := strings.ToUpper(s)
+	if strings.HasPrefix(upper, taskIDPrefix) {
+		return upper
+	}
+	if n, err := strconv.Atoi(s); err == nil {
+		return fmt.Sprintf("%s%06d", taskIDPrefix, n)
+	}
+	return s
 }

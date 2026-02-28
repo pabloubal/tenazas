@@ -177,7 +177,8 @@ Manages the filesystem-based task queue used by both the CLI and heartbeat.
 - **Status Constants**: `StatusTodo`, `StatusInProgress`, `StatusDone`, `StatusBlocked` — all status checks use typed constants, never raw strings.
 - **Ownership Model**: Tasks track `OwnerPID`, `OwnerInstanceID`, and `OwnerSessionID` when picked up. `ClearOwnership()` resets all three when a task completes or is blocked.
 - **Atomic Writes**: `WriteTask` uses a temp-file-then-rename pattern (matching `storage.go`) to prevent corruption on crash.
-- **`work` Subcommand**: `HandleWorkCommand` dispatches `init`, `add`, `next`, `complete`, and `status`. `init` runs `MigrateTasks` and prints a status summary. `next` sets ownership and `StartedAt`. `complete` sets `CompletedAt` and clears ownership.
+- **Task Lookup**: `FindTask(dir, id)` locates a single task by ID from the tasks directory.
+- **`work` Subcommand**: `HandleWorkCommand` dispatches `init`, `add`, `next`, `complete`, `status`, `list`, and `show`. `init` runs `MigrateTasks` and prints a status summary. `next` sets ownership and `StartedAt`. `complete` sets `CompletedAt` and clears ownership. `list` renders a tabular view of all tasks. `show <id>` displays full detail for a single task with resolved dependency statuses. Task IDs are normalized via `normalizeTaskID` (e.g., bare `1` → `TSK-000001`).
 
 ### `internal/heartbeat` (Background Runner)
 Periodically scans for pending heartbeat files and runs skills automatically.
