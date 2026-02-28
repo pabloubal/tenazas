@@ -16,8 +16,11 @@ func TestAnsiFormatter(t *testing.T) {
 			Content: "Verification Result (Exit Code: 0):\x0aSuccess!",
 		}
 		out := f.Format(e)
-		if !strings.Contains(out, "✅") {
-			t.Errorf("expected success icon ✅ for Exit Code: 0, got %s", out)
+		if !strings.Contains(out, "● Command Result") {
+			t.Errorf("expected bullet-style command result, got %s", out)
+		}
+		if !strings.Contains(out, "└") {
+			t.Errorf("expected └ summary prefix, got %s", out)
 		}
 	})
 
@@ -27,8 +30,12 @@ func TestAnsiFormatter(t *testing.T) {
 			Content: "Verification Result (Exit Code: 1):\x0aError!",
 		}
 		out := f.Format(e)
-		if !strings.Contains(out, "❌") {
-			t.Errorf("expected failure icon ❌ for Exit Code: 1, got %s", out)
+		if !strings.Contains(out, "● Command Result") {
+			t.Errorf("expected bullet-style command result, got %s", out)
+		}
+		// Should contain red color for failure
+		if !strings.Contains(out, "\x1b[31m") {
+			t.Errorf("expected red color for failure, got %s", out)
 		}
 	})
 }

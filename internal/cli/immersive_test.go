@@ -63,7 +63,7 @@ func TestImmersive_PromptPositioning(t *testing.T) {
 	if err != nil {
 		rows = 24
 	}
-	expectedRow := rows - DrawerHeight - 1
+	expectedRow := rows - DrawerHeight - 2
 	expectedMove := fmt.Sprintf("\x1b[%d;1H", expectedRow)
 
 	if !strings.Contains(output, expectedMove) {

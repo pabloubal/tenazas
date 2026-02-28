@@ -31,7 +31,12 @@ func (g *GeminiClient) SetModels(m map[string]string) { g.models = m }
 func (g *GeminiClient) Run(opts RunOptions, onChunk func(string), onSessionID func(string)) (string, error) {
 	args := g.buildArgs(opts)
 
-	cmd := exec.Command(g.binPath, args...)
+	var cmd *exec.Cmd
+	if opts.Ctx != nil {
+		cmd = exec.CommandContext(opts.Ctx, g.binPath, args...)
+	} else {
+		cmd = exec.Command(g.binPath, args...)
+	}
 	cmd.Dir = opts.CWD
 
 	stdout, err := cmd.StdoutPipe()

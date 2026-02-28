@@ -38,7 +38,12 @@ func (c *ClaudeCodeClient) SetModels(m map[string]string) { c.models = m }
 func (c *ClaudeCodeClient) Run(opts RunOptions, onChunk func(string), onSessionID func(string)) (string, error) {
 	args := c.buildArgs(opts)
 
-	cmd := exec.Command(c.binPath, args...)
+	var cmd *exec.Cmd
+	if opts.Ctx != nil {
+		cmd = exec.CommandContext(opts.Ctx, c.binPath, args...)
+	} else {
+		cmd = exec.Command(c.binPath, args...)
+	}
 	cmd.Dir = opts.CWD
 
 	stdout, err := cmd.StdoutPipe()

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"sort"
 	"strings"
@@ -46,6 +47,10 @@ type CLI struct {
 	pulseFrame    int
 	lastThought   string
 	skillCount    int
+	lastRows         int // tracks terminal rows for resize cleanup
+	gitBranch        string
+	lastRenderLines  int // tracks how many terminal rows the last input render occupied
+	lastEscTime      time.Time
 }
 
 func (c *CLI) refreshSkillCount() {
@@ -55,6 +60,29 @@ func (c *CLI) refreshSkillCount() {
 		c.skillCount = len(skills)
 		c.mu.Unlock()
 	}
+}
+
+func (c *CLI) refreshGitBranch() {
+	if c.sess == nil {
+		return
+	}
+	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	cmd.Dir = c.sess.CWD
+	out, err := cmd.Output()
+	if err != nil {
+		return
+	}
+	branch := strings.TrimSpace(string(out))
+	// Check for uncommitted changes
+	statusCmd := exec.Command("git", "status", "--porcelain")
+	statusCmd.Dir = c.sess.CWD
+	statusOut, _ := statusCmd.Output()
+	if len(statusOut) > 0 {
+		branch += "*"
+	}
+	c.mu.Lock()
+	c.gitBranch = branch
+	c.mu.Unlock()
 }
 
 func NewCLI(sm *session.Manager, reg *registry.Registry, eng *engine.Engine, defaultClient string) *CLI {
@@ -90,9 +118,11 @@ const (
 const (
 	DrawerHeight      = 8
 	DoubleTabInterval = 300 * time.Millisecond
-	PromptNormal      = "‹ › "
-	PromptPulse       = "« » "
-	PromptOffset      = 4
+	PromptNormal      = "› "
+	PromptPulse       = "› "
+	PromptOffset      = 2
+	Margin            = "  "
+	MarginWidth       = 2
 )
 
 func (c *CLI) getPrompt() string {
@@ -156,18 +186,18 @@ func (c *CLI) drawBrandingAtomic(sb *strings.Builder) {
 		if i < len(colors) {
 			color = colors[i]
 		}
-		fmt.Fprintf(sb, "\x1b[1;34m%s\x1b[0m%s%s%s\n", PromptNormal, color, line, escReset)
+		fmt.Fprintf(sb, "%s%s%s%s\n", Margin, color, line, escReset)
 	}
-	fmt.Fprintf(sb, "\n%s TENAZAS — This is the (Gate)way %s\n\n", escBoldCyan, escReset)
+	fmt.Fprintf(sb, "\n%s%s TENAZAS — This is the (Gate)way %s\n\n", Margin, escBoldCyan, escReset)
 
 	if c.sess != nil {
-		fmt.Fprintf(sb, "%sSession: %s%s\n", escDim, c.sess.ID, escReset)
-		fmt.Fprintf(sb, "%sPath:    %s%s\n", escDim, c.sess.CWD, escReset)
+		fmt.Fprintf(sb, "%s%sSession: %s%s\n", Margin, escDim, c.sess.ID, escReset)
+		fmt.Fprintf(sb, "%s%sPath:    %s%s\n", Margin, escDim, c.sess.CWD, escReset)
 		clientName := c.sess.Client
 		if clientName == "" {
 			clientName = c.DefaultClient
 		}
-		fmt.Fprintf(sb, "%sClient:  %s%s\n\n", escDim, clientName, escReset)
+		fmt.Fprintf(sb, "%s%sClient:  %s%s\n\n", Margin, escDim, clientName, escReset)
 	}
 }
 
@@ -192,6 +222,7 @@ func (c *CLI) Run(resume bool) error {
 	c.writeEscape(EscClear)
 	c.setupTerminal()
 	c.refreshSkillCount()
+	c.refreshGitBranch()
 	defer c.writeEscape("\x1b[r")
 
 	c.drawBranding()
@@ -202,14 +233,18 @@ func (c *CLI) Run(resume bool) error {
 		for range sigChan {
 			var sb strings.Builder
 			c.writeAtomic(&sb, func(sb *strings.Builder) {
+				sb.WriteString(escHideCursor)
+				sb.WriteString(escSaveCursor)
 				c.setupTerminalAtomic(sb)
 				c.drawDrawerAtomic(sb)
+				sb.WriteString(escRestoreCursor)
 				c.renderLineAtomic(sb)
+				sb.WriteString(escShowCursor)
 			})
 		}
 	}()
 
-	c.write("Commands: /run <skill>, /last <N>, /intervene <action>, /mode, /budget, /help\n")
+	c.write(Margin + "Commands: /run <skill>, /last <N>, /intervene <action>, /mode, /budget, /help\n")
 
 	if resume && sess.SkillName != "" {
 		c.resumeSkill(sess)
@@ -420,9 +455,9 @@ func (c *CLI) listenEvents(sessionID string) {
 				}
 			}
 
-			c.write(fmt.Sprintf("\n%s\n", f.Format(audit)))
+			c.write(fmt.Sprintf("\n%s%s\n", Margin, f.Format(audit)))
 			if audit.Type == events.AuditIntervention {
-				c.write("\nType `/intervene <retry|proceed_to_fail|abort>`\n" + PromptNormal)
+				c.write(fmt.Sprintf("\n%sType `/intervene <retry|proceed_to_fail|abort>`\n", Margin) + Margin + PromptNormal)
 			}
 		}
 	}
@@ -584,29 +619,128 @@ func (c *CLI) updateCompletionsLocked() {
 }
 
 func (c *CLI) renderLineAtomic(sb *strings.Builder) {
+	_, cols := c.getTermSize()
 	if c.IsImmersive {
 		rows, _ := c.getTermSize()
 		fmt.Fprintf(sb, escMoveTo, c.promptRow(rows))
+	} else {
+		// Move cursor back to the first row of the previous render
+		if c.lastRenderLines > 1 {
+			fmt.Fprintf(sb, "\x1b[%dA", c.lastRenderLines-1)
+		}
 	}
 
-	prompt := c.getPrompt()
+	prompt := Margin + c.getPrompt()
+	prefixLen := MarginWidth + PromptOffset
+
 	if c.isThinking {
 		sb.WriteString(escCyan)
 	}
 
 	line := string(c.input)
-	fmt.Fprintf(sb, "%s%s%s", escCR, prompt, line)
+
+	suggestion := ""
+	if !c.isThinking {
+		suggestion = c.getDimmedSuggestion(line)
+	}
+
+	// Calculate available width for text per line
+	availWidth := cols - prefixLen
+	if availWidth < 10 {
+		availWidth = 10
+	}
+
+	// Wrap the input text
+	wrappedLines := wrapText(line, availWidth)
+
+	continuationIndent := strings.Repeat(" ", prefixLen)
+
+	// Write first line with prompt
+	sb.WriteString(escCR)
+	sb.WriteString(escClearToEOL)
+	if len(wrappedLines) == 0 {
+		sb.WriteString(prompt)
+	} else {
+		sb.WriteString(prompt)
+		sb.WriteString(wrappedLines[0])
+	}
 
 	if c.isThinking {
 		sb.WriteString(escReset)
 	}
 
-	if suggestion := c.getDimmedSuggestion(line); suggestion != "" {
+	// Show suggestion only on single-line input
+	if suggestion != "" && len(wrappedLines) <= 1 {
 		fmt.Fprintf(sb, "%s%s%s", escDim, suggestion, escReset)
 	}
 
 	sb.WriteString(escClearToEOL)
-	fmt.Fprintf(sb, escCR+escMoveRight, c.cursorPos+PromptOffset)
+
+	// Write continuation lines
+	for i := 1; i < len(wrappedLines); i++ {
+		sb.WriteString("\n")
+		sb.WriteString(escCR)
+		sb.WriteString(escClearToEOL)
+		sb.WriteString(continuationIndent)
+		sb.WriteString(wrappedLines[i])
+		sb.WriteString(escClearToEOL)
+	}
+
+	// Clear any leftover rows from a previous longer render
+	currentLines := len(wrappedLines)
+	if currentLines < 1 {
+		currentLines = 1
+	}
+	prevRenderLines := c.lastRenderLines
+	for i := currentLines; i < prevRenderLines; i++ {
+		sb.WriteString("\n")
+		sb.WriteString(escCR)
+		sb.WriteString(escClearToEOL)
+	}
+
+	// Track how many lines this render used
+	c.lastRenderLines = currentLines
+
+	// Move cursor back to the correct position
+	// We're now at the last row written; figure out total rows we moved through
+	totalLinesWritten := currentLines
+	if prevRenderLines > currentLines {
+		totalLinesWritten = prevRenderLines
+	}
+	// We're now at the last row written; move up to the cursor's line
+	cursorLine, cursorCol := c.cursorPosition(wrappedLines, availWidth)
+	linesFromBottom := totalLinesWritten - 1 - cursorLine
+	if linesFromBottom > 0 {
+		fmt.Fprintf(sb, "\x1b[%dA", linesFromBottom)
+	}
+	fmt.Fprintf(sb, escCR+escMoveRight, cursorCol+prefixLen)
+}
+
+func wrapText(text string, width int) []string {
+	if width <= 0 || len(text) == 0 {
+		return []string{text}
+	}
+	runes := []rune(text)
+	var lines []string
+	for len(runes) > width {
+		lines = append(lines, string(runes[:width]))
+		runes = runes[width:]
+	}
+	lines = append(lines, string(runes))
+	return lines
+}
+
+func (c *CLI) cursorPosition(wrappedLines []string, availWidth int) (line, col int) {
+	if availWidth <= 0 || c.cursorPos == 0 {
+		return 0, c.cursorPos
+	}
+	line = c.cursorPos / availWidth
+	col = c.cursorPos % availWidth
+	if line >= len(wrappedLines) {
+		line = len(wrappedLines) - 1
+		col = len([]rune(wrappedLines[line]))
+	}
+	return line, col
 }
 
 func (c *CLI) renderLine() {
@@ -662,7 +796,7 @@ func (c *CLI) repl(sess *models.Session) error {
 
 	scanner := bufio.NewScanner(c.In)
 	for {
-		c.write("\n" + PromptNormal)
+		c.write("\n" + Margin + PromptNormal)
 		if !scanner.Scan() {
 			return io.EOF
 		}
@@ -696,6 +830,20 @@ func (c *CLI) replRaw(sess *models.Session) error {
 			line := string(c.input)
 			c.input = nil
 			c.cursorPos = 0
+			// Move to the last rendered line before writing newline
+			if c.lastRenderLines > 1 {
+				_, cols := c.getTermSize()
+				availWidth := cols - MarginWidth - PromptOffset
+				if availWidth < 10 {
+					availWidth = 10
+				}
+				cursorLine, _ := c.cursorPosition(wrapText(line, availWidth), availWidth)
+				linesDown := c.lastRenderLines - 1 - cursorLine
+				if linesDown > 0 {
+					c.writeLocked(fmt.Sprintf("\x1b[%dB", linesDown))
+				}
+			}
+			c.lastRenderLines = 0
 			c.resetCompletionsLocked()
 			c.mu.Unlock()
 
@@ -711,8 +859,12 @@ func (c *CLI) replRaw(sess *models.Session) error {
 			c.mu.Unlock()
 		case '\x1b':
 			c.mu.Unlock()
+			// Wait briefly to distinguish bare Escape from escape sequences (arrow keys, shift+tab)
+			time.Sleep(50 * time.Millisecond)
 			if reader.Buffered() > 0 {
 				c.handleEscape(reader, sess)
+			} else {
+				c.handleBareEscape(sess)
 			}
 		default:
 			if unicode.IsPrint(r) {
@@ -789,9 +941,44 @@ type FooterData struct {
 	SkillCount   int
 	CWD          string
 	Hint         string
+	GitBranch    string
+	ClientName   string
 }
 
-func FormatFooter(d FooterData) string {
+// FormatFooterLine1 returns the first footer line: path [branch] on left, client (tier) on right.
+func FormatFooterLine1(d FooterData, cols int) string {
+	dir := d.CWD
+	if home, err := os.UserHomeDir(); err == nil {
+		dir = strings.Replace(dir, home, "~", 1)
+	}
+
+	left := dir
+	if d.GitBranch != "" {
+		left += " [" + d.GitBranch + "]"
+	}
+
+	var rightParts []string
+	if d.ClientName != "" {
+		part := d.ClientName
+		if d.ModelTier != "" {
+			part += " (" + d.ModelTier + ")"
+		}
+		rightParts = append(rightParts, part)
+	}
+	if d.MaxBudgetUSD > 0 {
+		rightParts = append(rightParts, fmt.Sprintf("$%.2f", d.MaxBudgetUSD))
+	}
+	right := strings.Join(rightParts, " · ")
+
+	gap := cols - len(left) - len(right)
+	if gap < 1 {
+		gap = 1
+	}
+	return left + strings.Repeat(" ", gap) + right
+}
+
+// FormatFooterLine2 returns the second footer line: keybinding hints left, skills right.
+func FormatFooterLine2(d FooterData, cols int) string {
 	displayMode := d.Mode
 	if d.Yolo {
 		displayMode = models.ApprovalModeYolo
@@ -799,32 +986,14 @@ func FormatFooter(d FooterData) string {
 		displayMode = models.ApprovalModePlan
 	}
 
-	var parts []string
-	parts = append(parts, "["+displayMode+"]")
+	left := "shift+tab " + displayMode + " · ctrl+s run skill"
+	right := fmt.Sprintf("Skills: %d", d.SkillCount)
 
-	if d.ModelTier != "" {
-		parts = append(parts, "Model: "+d.ModelTier)
+	gap := cols - len(left) - len(right)
+	if gap < 1 {
+		gap = 1
 	}
-	if d.MaxBudgetUSD > 0 {
-		parts = append(parts, fmt.Sprintf("Budget: $%.2f", d.MaxBudgetUSD))
-	}
-
-	parts = append(parts, fmt.Sprintf("Skills: %d", d.SkillCount))
-
-	if d.CWD != "" {
-		dir := d.CWD
-		if home, err := os.UserHomeDir(); err == nil {
-			dir = strings.Replace(dir, home, "~", 1)
-		}
-		parts = append(parts, "CWD: "+dir)
-	}
-
-	condensedHint := strings.Join(strings.Fields(d.Hint), " ")
-	if condensedHint != "" {
-		parts = append(parts, "Thought: "+condensedHint)
-	}
-
-	return strings.Join(parts, " | ")
+	return left + strings.Repeat(" ", gap) + right
 }
 
 func (c *CLI) handleMode(sess *models.Session, args []string) {
@@ -887,6 +1056,11 @@ func (c *CLI) drawFooterAtomic(sb *strings.Builder, sess *models.Session) {
 	}
 	rows, cols := c.getTermSize()
 
+	clientName := sess.Client
+	if clientName == "" {
+		clientName = c.DefaultClient
+	}
+
 	d := FooterData{
 		Mode:         sess.ApprovalMode,
 		Yolo:         sess.Yolo,
@@ -895,19 +1069,25 @@ func (c *CLI) drawFooterAtomic(sb *strings.Builder, sess *models.Session) {
 		SkillCount:   c.skillCount,
 		CWD:          sess.CWD,
 		Hint:         c.lastThought,
+		GitBranch:    c.gitBranch,
+		ClientName:   clientName,
 	}
 
-	footer := FormatFooter(d)
-
-	if len(footer) > cols {
-		footer = footer[:cols]
-	}
+	line1 := FormatFooterLine1(d, cols)
+	line2 := FormatFooterLine2(d, cols)
 
 	sb.WriteString(escSaveCursor)
-	fmt.Fprintf(sb, escMoveTo, rows)
+	// Line 1 (second-to-last row)
+	fmt.Fprintf(sb, escMoveTo, rows-1)
 	sb.WriteString(escClearLine)
 	sb.WriteString(escBlueWhite)
-	fmt.Fprintf(sb, "%-*s", cols, footer)
+	fmt.Fprintf(sb, "%-*s", cols, line1)
+	sb.WriteString(escReset)
+	// Line 2 (last row)
+	fmt.Fprintf(sb, escMoveTo, rows)
+	sb.WriteString(escClearLine)
+	sb.WriteString(escDim)
+	fmt.Fprintf(sb, "%-*s", cols, line2)
 	sb.WriteString(escReset)
 	sb.WriteString(escRestoreCursor)
 }
@@ -931,6 +1111,36 @@ func (c *CLI) handleEscape(reader *bufio.Reader, sess *models.Session) {
 		}
 	case 'Z':
 		c.cycleModeLocked(sess)
+	}
+}
+
+func (c *CLI) handleBareEscape(sess *models.Session) {
+	c.mu.Lock()
+	isRunning := c.isThinking
+	hasInput := len(c.input) > 0
+	now := time.Now()
+	isDoubleEsc := !c.lastEscTime.IsZero() && now.Sub(c.lastEscTime) < DoubleTabInterval
+	c.lastEscTime = now
+	c.mu.Unlock()
+
+	if isRunning {
+		// Single escape while LLM is working → cancel
+		c.Engine.CancelSession(sess.ID)
+		c.setThinking(false)
+		c.write(fmt.Sprintf("\n%s%s● Operation cancelled%s\n", Margin, "\x1b[33m", escReset))
+		return
+	}
+
+	if hasInput && isDoubleEsc {
+		// Double escape while typing → clear input
+		c.mu.Lock()
+		c.input = nil
+		c.cursorPos = 0
+		c.lastRenderLines = 0
+		c.resetCompletionsLocked()
+		c.lastEscTime = time.Time{}
+		c.mu.Unlock()
+		c.renderLine()
 	}
 }
 
@@ -1001,19 +1211,34 @@ func (c *CLI) getTermSize() (int, int) {
 }
 
 func (c *CLI) drawerStartRow(rows int) int {
-	return rows - DrawerHeight
+	return rows - DrawerHeight - 1
 }
 
 func (c *CLI) promptRow(rows int) int {
-	return rows - DrawerHeight - 1
+	return rows - DrawerHeight - 2
 }
 
 func (c *CLI) setupTerminalAtomic(sb *strings.Builder) {
 	rows, _ := c.getTermSize()
 
-	bottomReserved := 1
+	// Clear old reserved rows to avoid ghost footers/drawers on resize.
+	if c.lastRows > 0 && c.lastRows != rows {
+		oldBottom := 2
+		if c.IsImmersive {
+			oldBottom = DrawerHeight + 3
+		}
+		for r := c.lastRows - oldBottom; r <= c.lastRows; r++ {
+			if r > 0 {
+				fmt.Fprintf(sb, escMoveTo, r)
+				sb.WriteString(escClearLine)
+			}
+		}
+	}
+	c.lastRows = rows
+
+	bottomReserved := 2
 	if c.IsImmersive {
-		bottomReserved = DrawerHeight + 2
+		bottomReserved = DrawerHeight + 3
 	}
 
 	fmt.Fprintf(sb, escScrollRegion, 1, rows-bottomReserved)

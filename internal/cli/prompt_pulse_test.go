@@ -28,16 +28,14 @@ func TestPromptStyle(t *testing.T) {
 	cli.renderLine()
 	output := out.String()
 
-	// 1. Check for the new minimalist prompt characters
-	if !strings.Contains(output, "‹ › ") {
-		t.Errorf("Expected output to contain new prompt '‹ › ', got %q", output)
+	// Check for the new minimalist prompt character
+	if !strings.Contains(output, "› ") {
+		t.Errorf("Expected output to contain new prompt '› ', got %q", output)
 	}
 
-	// 2. Check for the correct cursor position offset (+4 for "‹ › ")
-	// escCR (  ) + "‹ › " (4 chars) + "test" (4 chars) = 8 chars to the right of CR
-	// But "‹ ›" are UTF-8, they might be counted differently in bytes but should be 4 display positions.
-	// The implementation plan says: "Adjust cursorPos offset ... from +2 to +4"
-	expectedMoveRight := "\x1b[8C" // cursorPos(4) + 4 = 8
+	// Check for the correct cursor position offset (+2 for margin + 2 for "› ")
+	// MarginWidth(2) + PromptOffset(2) + cursorPos(4) = 8
+	expectedMoveRight := "\x1b[8C"
 	if !strings.Contains(output, expectedMoveRight) {
 		t.Errorf("Expected output to contain move right escape code %q, got %q", expectedMoveRight, output)
 	}
@@ -115,10 +113,8 @@ func TestBrandingPrompt(t *testing.T) {
 	cli.drawBrandingAtomic(&sb)
 	output := sb.String()
 
-	if !strings.Contains(output, "‹ › ") {
-		t.Errorf("Expected branding to use new prompt '‹ › '")
-	}
-	if strings.Contains(output, "> ") {
-		t.Errorf("Expected branding NOT to use old prompt '> '")
+	// Branding should contain the banner with margin
+	if !strings.Contains(output, "TENAZAS") {
+		t.Errorf("Expected branding to contain 'TENAZAS'")
 	}
 }

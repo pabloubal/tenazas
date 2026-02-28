@@ -99,4 +99,5 @@ type EngineInterface interface {
 	Run(skill *SkillGraph, sess *Session)
 	ResolveIntervention(id, action string)
 	IsRunning(sessionID string) bool
+	CancelSession(sessionID string)
 }

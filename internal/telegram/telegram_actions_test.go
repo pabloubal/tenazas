@@ -31,6 +31,7 @@ func (m *mockEngine) ExecuteCommand(sess *models.Session, cmd string) {
 func (m *mockEngine) Run(skill *models.SkillGraph, sess *models.Session) {}
 func (m *mockEngine) ResolveIntervention(id, action string)             {}
 func (m *mockEngine) IsRunning(sessionID string) bool                   { return false }
+func (m *mockEngine) CancelSession(sessionID string)                    {}
 
 func TestHandleActionCallback(t *testing.T) {
 	storageDir, _ := os.MkdirTemp("", "tenazas-tg-act-test-*")

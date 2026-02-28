@@ -36,6 +36,7 @@ func (m *mockEngineForCallback) ResolveIntervention(id, action string) {
 	m.resolvedAction = action
 }
 func (m *mockEngineForCallback) IsRunning(sessionID string) bool { return false }
+func (m *mockEngineForCallback) CancelSession(sessionID string)  {}
 
 func TestHandleCallback_Tokenization(t *testing.T) {
 	tmpDir, _ := os.MkdirTemp("", "tenazas-test-*")

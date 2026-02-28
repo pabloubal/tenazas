@@ -24,6 +24,8 @@ type Engine struct {
 	intervs       map[string]chan string
 	intervsMux    sync.RWMutex
 	running       sync.Map
+	cancelFns     sync.Map // sessionID -> context.CancelFunc
+	sessionCtxs   sync.Map // sessionID -> context.Context
 }
 
 func NewEngine(sm *session.Manager, clients map[string]client.Client, defaultClient string, maxLoops int) *Engine {
@@ -60,12 +62,27 @@ func (e *Engine) IsRunning(sessionID string) bool {
 	return ok
 }
 
+func (e *Engine) CancelSession(sessionID string) {
+	if fn, ok := e.cancelFns.Load(sessionID); ok {
+		fn.(context.CancelFunc)()
+	}
+}
+
 func (e *Engine) Run(skill *models.SkillGraph, sess *models.Session) {
 	if e.IsRunning(sess.ID) {
 		return
 	}
 	e.running.Store(sess.ID, true)
 	defer e.running.Delete(sess.ID)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	e.cancelFns.Store(sess.ID, cancel)
+	e.sessionCtxs.Store(sess.ID, ctx)
+	defer func() {
+		cancel()
+		e.cancelFns.Delete(sess.ID)
+		e.sessionCtxs.Delete(sess.ID)
+	}()
 
 	e.publishTaskStatus(sess.ID, events.TaskStateStarted, nil)
 	e.initializeExecution(skill, sess)
@@ -114,6 +131,11 @@ func (e *Engine) initializeExecution(skill *models.SkillGraph, sess *models.Sess
 }
 
 func (e *Engine) shouldContinue(sess *models.Session) bool {
+	if v, ok := e.sessionCtxs.Load(sess.ID); ok {
+		if v.(context.Context).Err() != nil {
+			return false
+		}
+	}
 	return sess.Status == models.StatusRunning || sess.Status == models.StatusIntervention
 }
 
@@ -245,6 +267,9 @@ func (e *Engine) callLLM(skill *models.SkillGraph, state *models.StateDef, sess 
 		Yolo:         sess.Yolo,
 		ModelTier:    modelTier,
 		MaxBudgetUSD: budget,
+	}
+	if v, ok := e.sessionCtxs.Load(sess.ID); ok {
+		opts.Ctx = v.(context.Context)
 	}
 
 	onChunk := e.OnChunk(sess, state)
@@ -380,7 +405,17 @@ func (e *Engine) resumeAndRun(sess *models.Session, f func()) {
 func (e *Engine) executePromptInternal(sess *models.Session, prompt string) {
 	e.log(sess, events.AuditLLMPrompt, "user", prompt)
 
+	ctx, cancel := context.WithCancel(context.Background())
+	e.cancelFns.Store(sess.ID, cancel)
+	e.sessionCtxs.Store(sess.ID, ctx)
+	defer func() {
+		cancel()
+		e.cancelFns.Delete(sess.ID)
+		e.sessionCtxs.Delete(sess.ID)
+	}()
+
 	opts := client.RunOptions{
+		Ctx:          ctx,
 		NativeSID:    sess.RoleCache["default"],
 		Prompt:       prompt,
 		CWD:          sess.CWD,
@@ -399,7 +434,11 @@ func (e *Engine) executePromptInternal(sess *models.Session, prompt string) {
 	onChunk("")
 
 	if err != nil {
-		e.log(sess, events.AuditInfo, "engine", "LLM Error: "+err.Error())
+		if ctx.Err() == context.Canceled {
+			e.log(sess, events.AuditInfo, "engine", "Operation cancelled by user")
+		} else {
+			e.log(sess, events.AuditInfo, "engine", "LLM Error: "+err.Error())
+		}
 	} else {
 		e.log(sess, events.AuditLLMResponse, "default", resp)
 	}

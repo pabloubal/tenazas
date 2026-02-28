@@ -2,7 +2,10 @@
 // and provides concrete implementations for each supported client.
 package client
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
 
 // Model tier constants used across all clients.
 const (
@@ -13,7 +16,8 @@ const (
 
 // RunOptions holds all parameters for a single client invocation.
 type RunOptions struct {
-	NativeSID    string  // client-specific session ID for continuity
+	Ctx          context.Context // cancellation context; nil means no cancellation
+	NativeSID    string          // client-specific session ID for continuity
 	Prompt       string
 	CWD          string
 	ApprovalMode string  // Tenazas approval mode (PLAN, AUTO_EDIT, YOLO)

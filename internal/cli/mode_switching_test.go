@@ -104,8 +104,8 @@ func TestShiftTabDetection(t *testing.T) {
 
 	// Output should contain the footer update for AUTO_EDIT
 	output := out.String()
-	if !strings.Contains(output, "[AUTO_EDIT]") {
-		t.Errorf("expected output to contain [AUTO_EDIT] in footer, got %s", output)
+	if !strings.Contains(output, "AUTO_EDIT") {
+		t.Errorf("expected output to contain AUTO_EDIT in footer, got %s", output)
 	}
 }
 
@@ -129,7 +129,7 @@ func TestFooterUpdateOnModeSwitch(t *testing.T) {
 	cli.cycleMode(sess) // Should switch to AUTO_EDIT and update footer
 
 	output := out.String()
-	if !strings.Contains(output, "[AUTO_EDIT]") {
-		t.Errorf("expected footer to contain [AUTO_EDIT], got %s", output)
+	if !strings.Contains(output, "AUTO_EDIT") {
+		t.Errorf("expected footer to contain AUTO_EDIT, got %s", output)
 	}
 }

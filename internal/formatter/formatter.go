@@ -13,25 +13,25 @@ type AnsiFormatter struct{}
 func (f *AnsiFormatter) Format(e events.AuditEntry) string {
 	switch e.Type {
 	case events.AuditInfo:
-		return fmt.Sprintf("\x1b[34;1m🟦 %s\x1b[0m", e.Content)
+		return fmt.Sprintf("\x1b[32m● \x1b[0m%s", e.Content)
 	case events.AuditLLMPrompt:
-		return fmt.Sprintf("\x1b[33m🟡 PROMPT (%s):\x1b[0m\n\x1b[90m%s\x1b[0m", e.Source, e.Content)
+		return fmt.Sprintf("\x1b[2m● Thinking...\x1b[0m")
 	case events.AuditLLMResponse:
-		return fmt.Sprintf("\x1b[32;1m🟢 RESPONSE:\x1b[0m\n%s", e.Content)
+		return fmt.Sprintf("\x1b[32m● Response:\x1b[0m\n%s", e.Content)
 	case events.AuditLLMThought:
-		return fmt.Sprintf("\x1b[2m💭 %s\x1b[0m", e.Content)
+		return fmt.Sprintf("\x1b[2m  %s\x1b[0m", e.Content)
 	case events.AuditCmdResult:
-		color, icon := "32", "✅"
+		color, icon := "\x1b[32m", "●"
 		if !strings.Contains(e.Content, "Exit Code: 0") {
-			color, icon = "31", "❌"
+			color, icon = "\x1b[31m", "●"
 		}
-		return fmt.Sprintf("\x1b[%s;1m%s COMMAND RESULT:\x1b[0m\n\x1b[90m%s\x1b[0m", color, icon, e.Content)
+		return fmt.Sprintf("%s%s Command Result\x1b[0m\n\x1b[2m  └ %s\x1b[0m", color, icon, e.Content)
 	case events.AuditIntervention:
-		return fmt.Sprintf("\x1b[31;1m⚠️ INTERVENTION REQUIRED:\x1b[0m\n%s", e.Content)
+		return fmt.Sprintf("\x1b[31;1m● Intervention Required\x1b[0m\n  %s", e.Content)
 	case events.AuditStatus:
-		return fmt.Sprintf("\x1b[35;1m🟣 %s\x1b[0m", e.Content)
+		return fmt.Sprintf("\x1b[35m● %s\x1b[0m", e.Content)
 	default:
-		return fmt.Sprintf("[%s] %s", e.Type, e.Content)
+		return fmt.Sprintf("● [%s] %s", e.Type, e.Content)
 	}
 }
 

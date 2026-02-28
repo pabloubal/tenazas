@@ -18,46 +18,56 @@ import (
 )
 
 func TestFormatFooter(t *testing.T) {
-	cases := []struct {
-		data     FooterData
-		contains []string
-	}{
-		{
-			FooterData{Mode: models.ApprovalModePlan, SkillCount: 5, Hint: "Searching...", CWD: "/tmp/project"},
-			[]string{"[PLAN]", "Skills: 5", "Thought: Searching...", "CWD: /tmp/project"},
-		},
-		{
-			FooterData{Mode: models.ApprovalModeAutoEdit, SkillCount: 12, Hint: "Processing files", ModelTier: "high"},
-			[]string{"[AUTO_EDIT]", "Skills: 12", "Model: high", "Thought: Processing files"},
-		},
-		{
-			FooterData{Mode: models.ApprovalModePlan, Yolo: true, SkillCount: 3, Hint: "Applying fix", MaxBudgetUSD: 5.50},
-			[]string{"[YOLO]", "Skills: 3", "Budget: $5.50", "Thought: Applying fix"},
-		},
-		{
-			FooterData{Mode: "", SkillCount: 0},
-			[]string{"[PLAN]", "Skills: 0"},
-		},
+	cols := 100
+
+	// Test line 1: path + branch + client + tier
+	d := FooterData{
+		Mode: models.ApprovalModePlan, SkillCount: 5, CWD: "/tmp/project",
+		GitBranch: "main", ClientName: "gemini", ModelTier: "high",
+	}
+	got1 := FormatFooterLine1(d, cols)
+	if !strings.Contains(got1, "/tmp/project") {
+		t.Errorf("Line1 missing CWD, got %q", got1)
+	}
+	if !strings.Contains(got1, "[main]") {
+		t.Errorf("Line1 missing git branch, got %q", got1)
+	}
+	if !strings.Contains(got1, "gemini (high)") {
+		t.Errorf("Line1 missing client+tier, got %q", got1)
 	}
 
-	for _, tc := range cases {
-		got := FormatFooter(tc.data)
-		for _, s := range tc.contains {
-			if !strings.Contains(got, s) {
-				t.Errorf("FormatFooter(%+v) = %q, missing %q", tc.data, got, s)
-			}
-		}
+	// Test line 2: mode + keybinding hints + skills
+	got2 := FormatFooterLine2(d, cols)
+	if !strings.Contains(got2, "shift+tab PLAN") {
+		t.Errorf("Line2 missing mode hint, got %q", got2)
+	}
+	if !strings.Contains(got2, "Skills: 5") {
+		t.Errorf("Line2 missing skill count, got %q", got2)
+	}
+
+	// Yolo mode
+	d2 := FooterData{Mode: models.ApprovalModePlan, Yolo: true, SkillCount: 3, MaxBudgetUSD: 5.50, ClientName: "claude-code"}
+	got2y := FormatFooterLine2(d2, cols)
+	if !strings.Contains(got2y, "shift+tab YOLO") {
+		t.Errorf("Line2 missing YOLO mode, got %q", got2y)
+	}
+	got1y := FormatFooterLine1(d2, cols)
+	if !strings.Contains(got1y, "$5.50") {
+		t.Errorf("Line1 missing budget, got %q", got1y)
 	}
 
 	// Budget should NOT appear when 0
-	got := FormatFooter(FooterData{Mode: "PLAN"})
-	if strings.Contains(got, "Budget") {
-		t.Errorf("expected no Budget in footer when 0, got %q", got)
+	d3 := FooterData{Mode: "PLAN", ClientName: "gemini"}
+	got1z := FormatFooterLine1(d3, cols)
+	if strings.Contains(got1z, "$") {
+		t.Errorf("expected no Budget in footer when 0, got %q", got1z)
 	}
 
-	// ModelTier should NOT appear when empty
-	if strings.Contains(got, "Model") {
-		t.Errorf("expected no Model in footer when empty, got %q", got)
+	// Empty mode defaults to PLAN
+	d4 := FooterData{Mode: "", SkillCount: 0}
+	got2z := FormatFooterLine2(d4, cols)
+	if !strings.Contains(got2z, "PLAN") {
+		t.Errorf("expected default PLAN mode, got %q", got2z)
 	}
 }
 
@@ -112,19 +122,12 @@ func TestDrawFooterSequences(t *testing.T) {
 		ApprovalMode: models.ApprovalModePlan,
 	}
 
-	// This will fail to compile if lastThought is not added to CLI struct
 	cli.lastThought = "Testing footer"
 	cli.skillCount = 5
 
 	cli.drawFooter(sess)
 
 	got := out.String()
-	// Check for ANSI sequences
-	// \033[s (save cursor)
-	// \033[<Row>;1H (move to last line)
-	// \033[2K (clear line)
-	// \033[44;37m (colors)
-	// \033[u (restore cursor)
 
 	if !strings.Contains(got, "\x1b[s") {
 		t.Errorf("output missing save cursor sequence")
@@ -132,11 +135,11 @@ func TestDrawFooterSequences(t *testing.T) {
 	if !strings.Contains(got, "\x1b[u") {
 		t.Errorf("output missing restore cursor sequence")
 	}
-	if !strings.Contains(got, "[PLAN]") {
-		t.Errorf("output missing mode [PLAN]")
+	if !strings.Contains(got, "PLAN") {
+		t.Errorf("output missing mode PLAN")
 	}
-	if !strings.Contains(got, "Thought: Testing footer") {
-		t.Errorf("output missing thought hint")
+	if !strings.Contains(got, "Skills: 5") {
+		t.Errorf("output missing skill count")
 	}
 }
 

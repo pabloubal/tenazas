@@ -25,9 +25,6 @@ func TestAnsiFormatter_Thought(t *testing.T) {
 	}
 	out := f.Format(e)
 	// Task 1 Step 3: Ensure thoughts have a basic format
-	if !strings.Contains(out, "💭") {
-		t.Errorf("expected thought icon 💭, got %s", out)
-	}
 	if !strings.Contains(out, "Thinking about the meaning of life") {
 		t.Errorf("expected thought content, got %s", out)
 	}
