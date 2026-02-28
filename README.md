@@ -50,7 +50,7 @@ sudo mv tenazas /usr/local/bin/
 
 ## Configuration
 
-Run `tenazas onboard` for an interactive setup wizard that detects installed agent CLIs and walks you through the initial configuration.
+Run `tenazas onboard` for an interactive setup wizard that detects installed agent CLIs, configures model tiers, lets you pick your default model, and walks you through the initial configuration.
 
 Or create `~/.tenazas/config.json` manually:
 
@@ -99,6 +99,7 @@ _You can also use environment variables: `TENAZAS_TG_TOKEN` and `TENAZAS_ALLOWED
 
 - **Start New Session**: `tenazas` — anchors the session to your current directory.
 - **Resume Session**: `tenazas --resume` — presents a paginated list of sessions to pick from.
+- **Run a Skill Directly**: `tenazas run <skillname>` — runs a skill non-interactively in YOLO mode, streams output to stdout, and exits with code 0 on success or 1 on failure. Useful for CI pipelines and scripting.
 
 ### Daemon (Telegram Gateway + Background Tasks)
 
@@ -150,6 +151,7 @@ Tenazas ensures continuity by passing the full output (logs) of each phase to th
 | `tenazas` | Start the interactive CLI REPL (default) |
 | `tenazas --resume` | Resume a previous session |
 | `tenazas --daemon` | Start Telegram bot + heartbeat runner |
+| `tenazas run <skill>` | Run a skill directly (non-interactive, exits on completion) |
 | `tenazas onboard` | Interactive setup wizard |
 | `tenazas work` | Task management subcommand |
 

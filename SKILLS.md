@@ -125,3 +125,11 @@ Remember that all `verify_cmd` and `tool` commands run inside the session's **CW
 - `/run <skill_name>`: Start a skill execution in the current session.
 - `/intervene <retry|proceed_to_fail|abort>`: Manually resolve a state that requires human intervention.
 - `/help`: Show a list of all available commands.
+
+Alternatively, run a skill directly from the command line without entering the REPL:
+
+```bash
+tenazas run <skill_name>
+```
+
+This runs the skill non-interactively in YOLO mode, streams output to stdout, and exits with code 0 on success or 1 on failure. Useful for CI pipelines and scripting.

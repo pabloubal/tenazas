@@ -142,6 +142,24 @@ func Run(storageDir string) error {
 		fmt.Println()
 	}
 
+	// --- Step 4: select default model ---
+	defaultCC := clients[defaultClient]
+	var tierItems []menuItem
+	for _, tier := range []string{"high", "medium", "low"} {
+		model := defaultCC.Models[tier]
+		if model != "" {
+			tierItems = append(tierItems, menuItem{Label: model, Desc: "(" + tier + " tier)"})
+		}
+	}
+	tierIdx, err := selectMenu("  Select default model:", tierItems)
+	if err != nil {
+		return fmt.Errorf("model selection: %w", err)
+	}
+	// Map selected model back to its tier.
+	tierOrder := []string{"high", "medium", "low"}
+	defaultModelTier := tierOrder[tierIdx]
+	fmt.Println()
+
 	// --- Step 5: select communication channel ---
 	channelOptions := []menuItem{
 		{Label: "Telegram", Desc: "Receive notifications and control sessions via Telegram bot"},
@@ -191,10 +209,11 @@ func Run(storageDir string) error {
 
 	// --- Step 8: build config ---
 	cfg := &config.Config{
-		StorageDir:    storageDir,
-		MaxLoops:      config.DefaultMaxLoops,
-		DefaultClient: defaultClient,
-		Clients:       clients,
+		StorageDir:       storageDir,
+		MaxLoops:         config.DefaultMaxLoops,
+		DefaultClient:    defaultClient,
+		DefaultModelTier: defaultModelTier,
+		Clients:          clients,
 		Channel: config.ChannelConfig{
 			Type: channel,
 		},

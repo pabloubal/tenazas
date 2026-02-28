@@ -209,7 +209,7 @@ Config is loaded via `~/.tenazas/config.json`, then overridden by Environment Va
 - `TENAZAS_ALLOWED_IDS`: Comma-separated list of Telegram User IDs.
 - `TENAZAS_STORAGE_DIR`: Override for `~/.tenazas`.
 
-Run `tenazas onboard` for an interactive setup wizard that detects installed agent CLIs and writes the initial config.
+Run `tenazas onboard` for an interactive setup wizard that detects installed agent CLIs, configures model tiers, lets you pick your default model, and writes the initial config.
 
 ### Handoff Flow
 1. **Desktop**: User starts `tenazas` in `~/projects/api`. A session is created with the configured client, anchored to that path.

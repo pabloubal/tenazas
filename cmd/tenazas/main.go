@@ -14,6 +14,8 @@ import (
 	_ "tenazas/internal/client" // register client implementations
 	"tenazas/internal/config"
 	"tenazas/internal/engine"
+	"tenazas/internal/events"
+	"tenazas/internal/formatter"
 	"tenazas/internal/heartbeat"
 	"tenazas/internal/models"
 	"tenazas/internal/onboard"
@@ -65,6 +67,15 @@ func main() {
 	if flag.Arg(0) == "work" {
 		task.HandleWorkCommand(cfg.StorageDir, flag.Args()[1:])
 		return
+	}
+
+	if flag.Arg(0) == "run" {
+		if flag.Arg(1) == "" {
+			fmt.Println("Usage: tenazas run <skillname>")
+			os.Exit(1)
+		}
+		handleSignals()
+		os.Exit(handleRunCommand(sm, eng, cfg, flag.Arg(1)))
 	}
 
 	var tg *telegram.Telegram
@@ -147,4 +158,68 @@ func handleSignals() {
 		fmt.Println("\nExiting...")
 		os.Exit(0)
 	}()
+}
+
+func handleRunCommand(sm *session.Manager, eng *engine.Engine, cfg *config.Config, skillName string) int {
+	cwd, _ := os.Getwd()
+
+	sess, err := sm.Create(cwd, "run: "+skillName)
+	if err != nil {
+		fmt.Printf("Failed to create session: %v\n", err)
+		return 1
+	}
+	sess.Client = cfg.DefaultClient
+	sess.SkillName = skillName
+	sess.Yolo = true
+	if cfg.DefaultModelTier != "" {
+		sess.ModelTier = cfg.DefaultModelTier
+	}
+	sm.Save(sess)
+
+	sk, err := sm.LoadSkill(skillName)
+	if err != nil {
+		fmt.Printf("Failed to load skill %q: %v\n", skillName, err)
+		return 1
+	}
+
+	// Stream events to stdout.
+	eventCh := events.GlobalBus.Subscribe()
+	f := &formatter.AnsiFormatter{}
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		for e := range eventCh {
+			if e.SessionID != sess.ID || e.Type != events.EventAudit {
+				continue
+			}
+			audit, ok := e.Payload.(events.AuditEntry)
+			if !ok {
+				continue
+			}
+			switch audit.Type {
+			case events.AuditLLMChunk:
+				fmt.Print(audit.Content)
+			case events.AuditLLMResponse:
+				fmt.Println()
+			case events.AuditCmdResult, events.AuditStatus, events.AuditInfo, events.AuditIntervention:
+				fmt.Println(f.Format(audit))
+			}
+		}
+	}()
+
+	eng.Run(sk, sess)
+
+	events.GlobalBus.Unsubscribe(eventCh)
+	<-done
+
+	// Reload to get final status.
+	if updated, err := sm.Load(sess.ID); err == nil {
+		sess = updated
+	}
+
+	if sess.Status == models.StatusCompleted {
+		return 0
+	}
+	return 1
 }
